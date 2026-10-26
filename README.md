@@ -40,6 +40,7 @@ aplod-galeri/
 ├── docs/
 │   ├── PANDUAN_LAPTOP.md              # Panduan lengkap laptop (Brave, Chrome, Edge)
 │   └── PANDUAN_HP.md                  # Panduan lengkap smartphone (Chrome & Kiwi)
+├── LAPORAN_PROYEK.md                  # Dokumen laporan resmi teknis proyek
 ├── .gitignore
 └── README.md
 ```
