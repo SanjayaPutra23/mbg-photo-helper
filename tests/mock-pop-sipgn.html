@@ -178,7 +178,10 @@
                 <h1 style="margin: 0; font-size: 20px; color: #1e3a8a;">POP SIPGN — Satuan Pelayanan Pemenuhan Gizi (SPPG)</h1>
                 <p style="margin: 4px 0 0 0; font-size: 12px; color: #64748b;">Halaman Formulir Dokumentasi Kegiatan Tahapan Operasional</p>
             </div>
-            <div class="badge">Simulasi Pengujian Lokal</div>
+            <div style="display: flex; gap: 8px; align-items: center;">
+                <button onclick="injectBookmarklet()" style="background: #2563eb; color: #fff; border: none; padding: 6px 12px; border-radius: 6px; font-size: 11px; font-weight: bold; cursor: pointer;">📱 Uji Bookmarklet HP</button>
+                <div class="badge">Simulasi Pengujian Lokal</div>
+            </div>
         </div>
 
         <div class="info-card">
@@ -355,6 +358,17 @@
             for (let i = 1; i <= 4; i++) {
                 document.getElementById('prev-' + i).innerHTML = '<span style="font-size: 12px; color: #94a3b8;">Belum ada foto</span>';
             }
+        }
+
+        function injectBookmarklet() {
+            const oldWidget = document.getElementById('mbg-quick-bypass');
+            if (oldWidget) oldWidget.remove();
+            window._mbgBmHooked = false;
+            window._mbgBmState = null;
+
+            const script = document.createElement('script');
+            script.src = '../scripts/bookmarklet.js?t=' + Date.now();
+            document.body.appendChild(script);
         }
 
         function submitForm() {

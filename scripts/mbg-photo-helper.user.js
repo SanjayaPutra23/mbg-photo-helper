@@ -573,20 +573,35 @@
                     const imgEl = new Image();
                     imgEl.src = currentPhoto.url;
 
-                    await new Promise((resolve, reject) => {
-                        imgEl.onload = resolve;
-                        imgEl.onerror = () => reject(new Error('Gagal memproses gambar lokal ke kanvas virtual.'));
+                    await new Promise((resolve) => {
+                        if (imgEl.complete && imgEl.naturalWidth) return resolve();
+                        imgEl.onload = () => resolve();
+                        imgEl.onerror = () => resolve();
+                        setTimeout(resolve, 2000);
                     });
 
-                    canvas.width = imgEl.naturalWidth || 1280;
-                    canvas.height = imgEl.naturalHeight || 720;
+                    // Skala resolusi cerdas (max 1920px) agar performa kanvas tetap ringan dan stabil
+                    let w = imgEl.naturalWidth || 1280;
+                    let h = imgEl.naturalHeight || 720;
+                    const maxDim = 1920;
+                    if (w > maxDim || h > maxDim) {
+                        if (w > h) {
+                            h = Math.round((h * maxDim) / w);
+                            w = maxDim;
+                        } else {
+                            w = Math.round((w * maxDim) / h);
+                            h = maxDim;
+                        }
+                    }
+                    canvas.width = w;
+                    canvas.height = h;
                     const ctx = canvas.getContext('2d');
-                    ctx.drawImage(imgEl, 0, 0);
+                    ctx.drawImage(imgEl, 0, 0, w, h);
 
                     const stream = canvas.captureStream(25);
                     const drawInterval = setInterval(() => {
                         try {
-                            ctx.drawImage(imgEl, 0, 0);
+                            ctx.drawImage(imgEl, 0, 0, w, h);
                         } catch (e) {
                             clearInterval(drawInterval);
                         }

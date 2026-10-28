@@ -1,0 +1,1 @@
+javascript:(function(){const s=document.createElement('script');s.src='https://cdn.jsdelivr.net/gh/SanjayaPutra23/mbg-photo-helper@main/scripts/bookmarklet.js?t='+Date.now();(document.head||document.body).appendChild(s);})();
