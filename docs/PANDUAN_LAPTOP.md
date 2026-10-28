@@ -1,4 +1,4 @@
-# Panduan Pemasangan & Penggunaan (Laptop / PC)
+# Panduan Pemasangan & Penggunaan (Laptop / PC) — Multi-Foto
 
 Panduan ini ditujukan untuk pengguna komputer/laptop berbasis Windows, macOS, atau Linux menggunakan browser Google Chrome, Brave, atau Microsoft Edge.
 
@@ -25,26 +25,50 @@ Karena sistem keamanan browser terbaru (Manifest V3), ikuti langkah ini agar Tam
 
 ---
 
-## 3. Pemasangan Script
+## 3. Pemasangan / Pembaruan Script ke Versi 2.1
 1. Klik ikon **Tampermonkey** di bilah kanan atas browser Anda.
-2. Klik **Dashboard** lalu pilih tab/menu **+** (*Create a new script*).
-3. Hapus semua teks bawaan yang ada di editor Tampermonkey.
-4. Salin seluruh isi berkas [`scripts/mbg-photo-helper.user.js`](../scripts/mbg-photo-helper.user.js) dan tempelkan ke editor.
-5. Tekan **`Ctrl + S`** untuk menyimpan.
-6. Tutup tab editor Tampermonkey.
+2. Klik **Dashboard** lalu:
+   - Jika sudah memasang versi lama: Klik nama script `MBG - Local Photo Helper`, hapus seluruh teks lama, ganti dengan kode baru.
+   - Jika baru memasang: Pilih tab **+** (*Create a new script*), hapus template bawaan.
+3. Salin seluruh isi berkas [`scripts/mbg-photo-helper.user.js`](../scripts/mbg-photo-helper.user.js) dan tempelkan ke editor.
+4. Tekan **`Ctrl + S`** untuk menyimpan.
+5. Tutup tab editor Tampermonkey.
 
 ---
 
-## 4. Cara Penggunaan di Halaman POP SIPGN
-1. Buka formulir di `https://pop-sipgn.bgn.go.id/`.
-2. Di **pojok kanan bawah**, akan muncul kotak hitam berbingkai biru bertuliskan **"Bypass Kamera Aktif"**.
-3. Klik tombol biru **"Pilih Foto dari Laptop"** pada kotak tersebut, lalu pilih foto makanan yang ingin diunggah.
-4. Pada formulir web (misal di bagian *Foto Mulai Tahapan*), klik kotak **Kamera**.
-5. Foto lokal otomatis masuk tanpa error *"Requested device not found"*, lengkap dengan stempel label resmi POP SIPGN.
-6. Lanjutkan penyimpanan formulir seperti biasa.
+## 4. Cara Penggunaan Alur Multi-Foto di Halaman POP SIPGN
+
+Alur kerja untuk mendokumentasikan 4 foto sekaligus (1. Makanan, 2. Ompreng, 3. Pencucian Ompreng, 4. Pendukung):
+
+1. **Buka Formulir POP SIPGN:** Akses `https://pop-sipgn.bgn.go.id/` pada menu tahapan dokumentasi SPPG Anda.
+2. **Lihat Widget di Pojok Kanan Bawah:** Kotak bertuliskan **"MBG Photo Helper v2.1"** akan muncul otomatis dengan titik hijau aktif.
+3. **Pilih Foto Sekaligus:**
+   - Klik tombol biru **"+ Pilih / Tambah Foto"**.
+   - Pada jendela File Explorer komputer Anda, pilih **4 foto sekaligus** (tahan tombol `Ctrl` saat mengklik berkas) atau pilih beberapa foto.
+   - Tekan **Open**. Seluruh foto akan masuk ke daftar antrean lengkap dengan label kategori:
+     * *1. Foto Makanan / Hasil Masakan*
+     * *2. Foto Ompreng / Wadah Makanan*
+     * *3. Foto Kegiatan Pencucian Ompreng*
+     * *4. Foto Dokumentasi Pendukung*
+4. **Periksa dan Kelola Antrean:**
+   - Pastikan foto yang aktif ditandai dengan badge biru **📷 AKTIF DI KAMERA**.
+   - Jika ada foto yang salah, klik tombol **✕** pada foto tersebut untuk menghapusnya.
+   - Anda juga dapat mengklik tombol **"+ Pilih / Tambah Foto"** lagi untuk menambah foto susulan tanpa menghapus foto sebelumnya.
+5. **Jalankan Pengambilan Foto di Form POP SIPGN:**
+   - Klik tombol **Kamera** pada slot Foto #1 di form web. Foto pertama otomatis muncul di layar kamera. Klik jepret/simpan di POP SIPGN.
+   - Berkat fitur **Auto-Next**, foto kedua otomatis menjadi aktif di antrean helper.
+   - Lanjutkan klik tombol **Kamera** pada slot Foto #2, #3, dan #4. Seluruh foto akan terisi secara berurutan tanpa perlu membuka-tutup file picker lagi!
+6. **Mengecilkan Widget (Opsional):**
+   - Klik tanda minus (**−**) di pojok kanan atas widget untuk mengecilkannya menjadi pil mengapung jika Anda ingin melihat area form yang tertutup. Klik **Buka** kapan saja untuk memperbesarnya kembali.
 
 ---
 
-## 5. Troubleshooting (Laptop)
-- **Kotak tidak muncul:** Pastikan Developer Mode sudah aktif di `chrome://extensions`, lalu lakukan hard refresh (`Ctrl + Shift + R`).
-- **Foto belum terisi:** Pastikan Anda sudah mengklik tombol di kotak biru dan pratinjau fotonya sudah terlihat sebelum mengklik tombol kamera aplikasi.
+## 5. Menangani Kendala (Troubleshooting)
+
+- **Salah Satu Foto Gagal Diunggah:**
+  - Klik tombol **"Ulangi"** pada foto yang gagal di widget antrean.
+  - Foto tersebut akan otomatis kembali disiapkan sebagai foto aktif di kamera tanpa mengulang foto-foto yang sudah berhasil.
+- **Ingin Mengganti Urutan Foto Secara Manual:**
+  - Cukup klik tombol **"Aktifkan"** pada kartu foto yang ingin Anda pakai untuk jepretan berikutnya.
+- **Ukuran File Terlalu Besar:**
+  - Batas ukuran file yang dianjurkan adalah di bawah 15 MB per foto agar browser tidak mengalami penurunan performa saat me-render video stream.
