@@ -44,15 +44,14 @@ function minifyJs(code) {
         // Inside Backticks (HTML / CSS templates): collapse newlines & indentation between tags
         if (inBacktick) {
             if (ch === '\n' || ch === '\r') {
-                // Peek ahead and skip spaces/tabs
+                // Peek ahead and skip spaces/tabs/newlines
                 let j = i + 1;
                 while (j < len && (code[j] === ' ' || code[j] === '\t' || code[j] === '\n' || code[j] === '\r')) {
                     j++;
                 }
-                // If it's between HTML tags, omit newline completely, else single space
                 const prevChar = result[result.length - 1];
                 const nextChar = code[j];
-                if (prevChar === '>' || nextChar === '<' || prevChar === ';' || prevChar === '{' || prevChar === '}') {
+                if (prevChar === '>' || nextChar === '<' || prevChar === ';' || prevChar === '{' || prevChar === '}' || prevChar === '`' || nextChar === '`') {
                     i = j;
                     continue;
                 }
@@ -65,8 +64,17 @@ function minifyJs(code) {
             continue;
         }
 
-        // Inside standard single/double quotes: keep exact
+        // Inside standard single/double quotes: keep exact (escape any literal newline)
         if (inSingleQuote || inDoubleQuote) {
+            if (ch === '\n') {
+                result += '\\n';
+                i++;
+                continue;
+            }
+            if (ch === '\r') {
+                i++;
+                continue;
+            }
             result += ch;
             i++;
             continue;
@@ -90,10 +98,41 @@ function minifyJs(code) {
             continue;
         }
 
+        // Handle RegExp literals (starts with / after operator or punctuation)
+        if (ch === '/' && next !== '/' && next !== '*') {
+            const trimmedPrev = result.trimEnd();
+            const lastChar = trimmedPrev[trimmedPrev.length - 1];
+            if (!lastChar || /[=([{:;!&|,?~*+\-\/]/.test(lastChar)) {
+                result += ch;
+                i++;
+                let inCharClass = false;
+                while (i < len) {
+                    const rch = code[i];
+                    result += rch;
+                    if (rch === '\\') {
+                        i++;
+                        if (i < len) result += code[i];
+                    } else if (rch === '[') {
+                        inCharClass = true;
+                    } else if (rch === ']') {
+                        inCharClass = false;
+                    } else if (rch === '/' && !inCharClass) {
+                        i++;
+                        while (i < len && /[gimsuy]/.test(code[i])) {
+                            result += code[i];
+                            i++;
+                        }
+                        break;
+                    }
+                    i++;
+                }
+                continue;
+            }
+        }
+
         // Whitespace outside strings: collapse consecutive whitespaces
         if (/\s/.test(ch)) {
             const last = result[result.length - 1];
-            // Only add space if preceding char is an identifier or keyword
             if (last && /[a-zA-Z0-9_$]/.test(last)) {
                 let j = i;
                 while (j < len && /\s/.test(code[j])) j++;
@@ -121,6 +160,7 @@ if (!minified.startsWith('javascript:')) {
 
 fs.writeFileSync('scripts/bookmarklet-minified.url.txt', minified, 'utf8');
 console.log('Bookmarklet Minified bytes:', minified.length);
+console.log('Contains newline?', minified.includes('\n'));
 
 // Uji integritas sintaks
 try {

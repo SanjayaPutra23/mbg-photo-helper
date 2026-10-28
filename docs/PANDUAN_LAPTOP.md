@@ -1,6 +1,6 @@
-# Panduan Pemasangan & Penggunaan (Laptop / PC) — Multi-Foto
+# Panduan Pemasangan & Penggunaan (Laptop / PC) — Multi-Foto & Multi-Sekolah
 
-Panduan ini ditujukan untuk pengguna komputer/laptop berbasis Windows, macOS, atau Linux menggunakan browser Google Chrome, Brave, atau Microsoft Edge.
+Panduan ini ditujukan untuk pengguna komputer/laptop berbasis Windows, macOS, atau Linux menggunakan browser Google Chrome, Brave, atau Microsoft Edge dengan **MBG Photo Helper Versi 2.2.0**.
 
 ---
 
@@ -25,7 +25,7 @@ Karena sistem keamanan browser terbaru (Manifest V3), ikuti langkah ini agar Tam
 
 ---
 
-## 3. Pemasangan / Pembaruan Script ke Versi 2.1
+## 3. Pemasangan / Pembaruan Script ke Versi 2.2.0
 1. Klik ikon **Tampermonkey** di bilah kanan atas browser Anda.
 2. Klik **Dashboard** lalu:
    - Jika sudah memasang versi lama: Klik nama script `MBG - Local Photo Helper`, hapus seluruh teks lama, ganti dengan kode baru.
@@ -36,39 +36,42 @@ Karena sistem keamanan browser terbaru (Manifest V3), ikuti langkah ini agar Tam
 
 ---
 
-## 4. Cara Penggunaan Alur Multi-Foto di Halaman POP SIPGN
+## 4. Cara Penggunaan Alur Multi-Foto & Multi-Sekolah di Halaman POP SIPGN
 
-Alur kerja untuk mendokumentasikan 4 foto sekaligus (1. Makanan, 2. Ompreng, 3. Pencucian Ompreng, 4. Pendukung):
-
+### A. Memilih & Mengelola Koleksi Foto Sumber:
 1. **Buka Formulir POP SIPGN:** Akses `https://pop-sipgn.bgn.go.id/` pada menu tahapan dokumentasi SPPG Anda.
-2. **Lihat Widget di Pojok Kanan Bawah:** Kotak bertuliskan **"MBG Photo Helper v2.1"** akan muncul otomatis dengan titik hijau aktif.
-3. **Pilih Foto Sekaligus:**
+2. **Lihat Widget di Pojok Kanan Bawah:** Kotak bertuliskan **"MBG Photo Helper v2.2"** akan muncul otomatis dengan indikator hijau aktif.
+3. **Pilih 4 Foto Kegiatan Sekaligus:**
    - Klik tombol biru **"+ Pilih / Tambah Foto"**.
-   - Pada jendela File Explorer komputer Anda, pilih **4 foto sekaligus** (tahan tombol `Ctrl` saat mengklik berkas) atau pilih beberapa foto.
-   - Tekan **Open**. Seluruh foto akan masuk ke daftar antrean lengkap dengan label kategori:
+   - Pada jendela File Explorer komputer Anda, pilih 4 foto kegiatan sekaligus (tahan tombol `Ctrl` saat mengklik berkas):
      * *1. Foto Makanan / Hasil Masakan*
      * *2. Foto Ompreng / Wadah Makanan*
      * *3. Foto Kegiatan Pencucian Ompreng*
      * *4. Foto Dokumentasi Pendukung*
-4. **Periksa dan Kelola Antrean:**
-   - Pastikan foto yang aktif ditandai dengan badge biru **📷 AKTIF DI KAMERA**.
-   - Jika ada foto yang salah, klik tombol **✕** pada foto tersebut untuk menghapusnya.
-   - Anda juga dapat mengklik tombol **"+ Pilih / Tambah Foto"** lagi untuk menambah foto susulan tanpa menghapus foto sebelumnya.
-5. **Jalankan Pengambilan Foto di Form POP SIPGN:**
-   - Klik tombol **Kamera** pada slot Foto #1 di form web. Foto pertama otomatis muncul di layar kamera. Klik jepret/simpan di POP SIPGN.
-   - Berkat fitur **Auto-Next**, foto kedua otomatis menjadi aktif di antrean helper.
-   - Lanjutkan klik tombol **Kamera** pada slot Foto #2, #3, dan #4. Seluruh foto akan terisi secara berurutan tanpa perlu membuka-tutup file picker lagi!
-6. **Mengecilkan Widget (Opsional):**
-   - Klik tanda minus (**−**) di pojok kanan atas widget untuk mengecilkannya menjadi pil mengapung jika Anda ingin melihat area form yang tertutup. Klik **Buka** kapan saja untuk memperbesarnya kembali.
+   - Tekan **Open**. Seluruh foto akan masuk ke daftar koleksi sumber yang persisten (disimpan ke IndexedDB browser).
+4. **Fleksibilitas Koleksi:**
+   - Anda dapat menambahkan foto lain kapan saja dengan mengklik lagi **"+ Pilih / Tambah Foto"** tanpa menghapus foto yang sudah ada.
+   - Untuk menghapus foto yang keliru, klik ikon tempat sampah (**🗑**) pada kartu foto tersebut.
+
+### B. Mengisi Dokumentasi Sekolah Pertama:
+1. Klik tombol **Kamera** pada slot Foto #1 di form POP SIPGN. Foto pertama otomatis mengalir ke layar kamera virtual. Klik jepret/simpan di POP SIPGN.
+2. Saat penangkapan foto selesai, antrean virtual otomatis memajukan kamera ke Foto #2.
+3. Lanjutkan klik tombol **Kamera** pada slot Foto #2, #3, dan #4.
+4. Status pengiriman setiap foto untuk sekolah tersebut akan ditandai dengan badge hijau (**✓ Terkirim**).
+
+### C. Menggunakan Foto yang Sama untuk Sekolah Berikutnya (Tanpa Pilih Ulang):
+1. Beralih ke formulir sekolah kedua di POP SIPGN.
+2. Klik tombol **"🔄 Sesi Baru"** di bagian header widget, lalu beri nama sekolah (misalnya `SD Negeri Cilandak 02`).
+3. **Koleksi foto sumber Anda tetap utuh 100%!** Anda tidak perlu memilih ulang berkas dari laptop.
+4. Status pengiriman akan siap kembali dan Anda langsung dapat menekan tombol kamera pada form sekolah kedua.
 
 ---
 
 ## 5. Menangani Kendala (Troubleshooting)
 
-- **Salah Satu Foto Gagal Diunggah:**
-  - Klik tombol **"Ulangi"** pada foto yang gagal di widget antrean.
-  - Foto tersebut akan otomatis kembali disiapkan sebagai foto aktif di kamera tanpa mengulang foto-foto yang sudah berhasil.
-- **Ingin Mengganti Urutan Foto Secara Manual:**
-  - Cukup klik tombol **"Aktifkan"** pada kartu foto yang ingin Anda pakai untuk jepretan berikutnya.
-- **Ukuran File Terlalu Besar:**
-  - Batas ukuran file yang dianjurkan adalah di bawah 15 MB per foto agar browser tidak mengalami penurunan performa saat me-render video stream.
+- **Ingin Memilih Foto Tertentu ke Kamera Secara Manual:**
+  - Klik tombol **"📷 Pilih ke Kamera"** pada kartu foto mana saja untuk langsung mengarahkannya ke kamera tanpa terikat urutan otomatis.
+- **Mengosongkan Seluruh Koleksi Sumber:**
+  - Klik tombol abu-abu **"Reset Koleksi"** di samping tombol tambah foto. Browser akan meminta konfirmasi sebelum membersihkan IndexedDB.
+- **Mengecilkan Tampilan Widget:**
+  - Klik tombol minus (**−**) pada bilah judul widget untuk mengecilkannya menjadi pil minimalis. Klik tombol **Buka** kapan saja untuk memperbesarnya kembali.

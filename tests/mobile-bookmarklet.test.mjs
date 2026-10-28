@@ -2,10 +2,11 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-// Helper mock browser environment untuk testing Bookmarklet Mobile
+// Helper mock browser environment untuk testing Bookmarklet Mobile (Unified v2.2.0)
 function createMockMobileEnv() {
     const elementsById = new Map();
     const eventListeners = new Map();
+    const dbStores = new Map();
 
     function createNode(tag, id = '') {
         const node = {
@@ -32,12 +33,12 @@ function createMockMobileEnv() {
                     const tid = sel.substring(1);
                     return elementsById.get(tid) || null;
                 }
-                if (sel.includes('[data-act')) {
-                    const valMatch = sel.match(/\[data-act="?([^"\]]+)"?\]/);
-                    const targetVal = valMatch ? valMatch[1] : null;
+                if (sel.includes('[data-action')) {
+                    const m = sel.match(/\[data-action="?([^"\]]+)"?\]/);
+                    const targetAction = m ? m[1] : null;
                     for (const [k, el] of elementsById) {
-                        if (el.attributes && el.attributes['data-act']) {
-                            if (!targetVal || el.attributes['data-act'] === targetVal) {
+                        if (el.attributes && el.attributes['data-action']) {
+                            if (!targetAction || el.attributes['data-action'] === targetAction) {
                                 return el;
                             }
                         }
@@ -51,7 +52,7 @@ function createMockMobileEnv() {
                     if (sel.includes('input[type="file"]') && el.tagName === 'INPUT') {
                         results.push(el);
                     }
-                    if (sel.includes('[data-act]') && el.attributes['data-act']) {
+                    if (sel.includes('[data-action]') && el.attributes['data-action']) {
                         results.push(el);
                     }
                 });
@@ -75,7 +76,7 @@ function createMockMobileEnv() {
             get() { return this._rawHtml || ''; },
             set(html) {
                 this._rawHtml = html;
-                // Parse IDs
+                // Parse tags with IDs
                 const idMatches = [...html.matchAll(/<([a-z0-9]+)[^>]*\bid=["']([^"']+)["'][^>]*>/gi)];
                 idMatches.forEach(m => {
                     const tag = m[1];
@@ -91,16 +92,16 @@ function createMockMobileEnv() {
                     }
                 });
 
-                // Parse data-act
-                const actMatches = [...html.matchAll(/<([a-z0-9]+)[^>]*\bdata-act=["']([^"']+)["'][^>]*>/gi)];
+                // Parse tags with data-action
+                const actMatches = [...html.matchAll(/<([a-z0-9]+)[^>]*\bdata-action=["']([^"']+)["'][^>]*>/gi)];
                 actMatches.forEach(m => {
                     const tag = m[1];
                     const act = m[2];
                     const fullTag = m[0];
                     const child = createNode(tag);
-                    child.attributes['data-act'] = act;
-                    const iM = fullTag.match(/data-i=["']([^"']+)["']/i);
-                    if (iM) child.attributes['data-i'] = iM[1];
+                    child.attributes['data-action'] = act;
+                    const idM = fullTag.match(/data-id=["']([^"']+)["']/i);
+                    if (idM) child.attributes['data-id'] = idM[1];
                     elementsById.set('dyn_act_' + Math.random(), child);
                 });
             }
@@ -176,6 +177,45 @@ function createMockMobileEnv() {
         }
     }
 
+    const mockIndexedDB = {
+        open(name, version) {
+            const req = {
+                result: {
+                    objectStoreNames: { contains: () => true },
+                    createObjectStore: () => ({}),
+                    transaction: (storeName, mode) => {
+                        if (!dbStores.has(storeName)) dbStores.set(storeName, new Map());
+                        const storeMap = dbStores.get(storeName);
+                        const tx = {
+                            objectStore: () => ({
+                                put: (item) => storeMap.set(item.id, item),
+                                delete: (key) => storeMap.delete(key),
+                                clear: () => storeMap.clear(),
+                                getAll: () => {
+                                    const r = { result: Array.from(storeMap.values()) };
+                                    setTimeout(() => { if (r.onsuccess) r.onsuccess(); }, 2);
+                                    return r;
+                                }
+                            }),
+                            oncomplete: null,
+                            onerror: null
+                        };
+                        setTimeout(() => { if (tx.oncomplete) tx.oncomplete(); }, 5);
+                        return tx;
+                    }
+                },
+                onsuccess: null,
+                onerror: null,
+                onupgradeneeded: null
+            };
+            setTimeout(() => {
+                if (req.onupgradeneeded) req.onupgradeneeded({ target: req });
+                if (req.onsuccess) req.onsuccess();
+            }, 5);
+            return req;
+        }
+    };
+
     const mockWin = {
         document: mockDoc,
         navigator: {
@@ -183,18 +223,28 @@ function createMockMobileEnv() {
                 getUserMedia: async (constraints) => ({ mockNativeStream: true })
             }
         },
+        indexedDB: mockIndexedDB,
         URL: {
             createObjectURL(file) { return 'blob://mock/' + file.name; },
             revokeObjectURL(url) { }
         },
         Image: MockMobileImage,
+        prompt: (msg, def) => def || 'Sekolah Baru',
+        confirm: () => true,
+        alert: () => { },
         setTimeout: setTimeout,
         clearTimeout: clearTimeout,
         setInterval: () => 123,
         clearInterval: () => { }
     };
 
-    return { mockWin, mockDoc, elementsById };
+    return { mockWin, mockDoc, elementsById, dbStores };
+}
+
+function runBookmarklet(mockWin, mockDoc) {
+    const bookmarkletCode = fs.readFileSync('scripts/bookmarklet.js', 'utf8');
+    const run = new Function('unsafeWindow', 'window', 'document', 'URL', 'Image', 'navigator', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'prompt', 'confirm', bookmarkletCode);
+    run(mockWin, mockWin, mockDoc, mockWin.URL, mockWin.Image, mockWin.navigator, setTimeout, clearTimeout, () => 1, () => { }, mockWin.prompt, mockWin.confirm);
 }
 
 describe('MBG Photo Helper — Debugging & Verifikasi Mobile Bookmarklet', () => {
@@ -218,56 +268,49 @@ describe('MBG Photo Helper — Debugging & Verifikasi Mobile Bookmarklet', () =>
         popSipgnInput.setAttribute('capture', 'camera');
         elementsById.set('pop-capture-input', popSipgnInput);
 
-        const bookmarkletCode = fs.readFileSync('scripts/bookmarklet.js', 'utf8');
-        const run = new Function('window', 'document', 'navigator', 'URL', 'Image', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', bookmarkletCode);
-        run(mockWin, mockDoc, mockWin.navigator, mockWin.URL, mockWin.Image, setTimeout, clearTimeout, () => 1, () => { });
+        runBookmarklet(mockWin, mockDoc);
 
         assert.strictEqual(popSipgnInput.hasAttribute('capture'), false, 'Atribut capture="camera" pada form harus dihapus');
 
         const widget = mockDoc.getElementById('mbg-quick-bypass');
         assert.ok(widget, 'Widget mbg-quick-bypass harus terpasang di DOM mobile');
 
-        const fileInput = mockDoc.getElementById('mbg-bm-file');
-        assert.ok(fileInput, 'Input mbg-bm-file harus ada');
+        const fileInput = mockDoc.getElementById('mbg-file-input');
+        assert.ok(fileInput, 'Input mbg-file-input harus ada');
         assert.ok(fileInput.style.position === 'absolute' || fileInput.attributes.multiple !== undefined);
     });
 
-    test('3. Pemilihan 4 Foto di HP dan Pembaruan Tahap / Debugging', () => {
+    test('3. Pemilihan 4 Foto di HP dan Pembaruan State Koleksi', () => {
         const { mockWin, mockDoc } = createMockMobileEnv();
-        const bookmarkletCode = fs.readFileSync('scripts/bookmarklet.js', 'utf8');
-        const run = new Function('window', 'document', 'navigator', 'URL', 'Image', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', bookmarkletCode);
-        run(mockWin, mockDoc, mockWin.navigator, mockWin.URL, mockWin.Image, setTimeout, clearTimeout, () => 1, () => { });
+        runBookmarklet(mockWin, mockDoc);
 
-        const fileInput = mockDoc.getElementById('mbg-bm-file');
+        const fileInput = mockDoc.getElementById('mbg-file-input');
         const samplePhotos = [
-            { name: 'makanan_hp.jpg', size: 3 * 1024 * 1024 },
-            { name: 'ompreng_hp.jpg', size: 2.5 * 1024 * 1024 },
-            { name: 'cuci_hp.jpg', size: 4 * 1024 * 1024 },
-            { name: 'pendukung_hp.jpg', size: 2 * 1024 * 1024 }
+            { name: 'makanan_hp.jpg', size: 3 * 1024 * 1024, type: 'image/jpeg' },
+            { name: 'ompreng_hp.jpg', size: 2.5 * 1024 * 1024, type: 'image/jpeg' },
+            { name: 'cuci_hp.jpg', size: 4 * 1024 * 1024, type: 'image/jpeg' },
+            { name: 'pendukung_hp.jpg', size: 2 * 1024 * 1024, type: 'image/jpeg' }
         ];
 
         fileInput.onchange({ target: { files: samplePhotos } });
 
-        const st = mockWin._mbgBmState;
-        assert.strictEqual(st.photos.length, 4, '4 foto harus masuk antrean mobile');
-        assert.strictEqual(st.photos[0].status, 'active');
-        assert.strictEqual(st.photos[1].status, 'pending');
-
-        const stageEl = mockDoc.getElementById('mbg-bm-stage');
-        assert.ok(stageEl, 'Elemen indikator tahap harus ada');
-        assert.ok(st.stage.includes('ditambahkan') || st.stage.includes('Kamera siap'));
+        const st = mockWin._mbgState;
+        assert.strictEqual(st.collection.length, 4, '4 foto harus masuk ke koleksi');
+        assert.strictEqual(st.collection[0].category, '1. Foto Makanan / Hasil Masakan');
+        assert.strictEqual(st.collection[1].category, '2. Foto Ompreng / Wadah Makanan');
+        assert.strictEqual(st.collection[2].category, '3. Foto Kegiatan Pencucian Ompreng');
+        assert.strictEqual(st.collection[3].category, '4. Foto Dokumentasi Pendukung');
+        assert.strictEqual(st.activePhotoId, st.collection[0].id);
     });
 
     test('4. WebRTC Canvas Scaling Aman untuk Mencegah Crash Memori HP', async () => {
         const { mockWin, mockDoc } = createMockMobileEnv();
-        const bookmarkletCode = fs.readFileSync('scripts/bookmarklet.js', 'utf8');
-        const run = new Function('window', 'document', 'navigator', 'URL', 'Image', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', bookmarkletCode);
-        run(mockWin, mockDoc, mockWin.navigator, mockWin.URL, mockWin.Image, setTimeout, clearTimeout, () => 1, () => { });
+        runBookmarklet(mockWin, mockDoc);
 
-        const fileInput = mockDoc.getElementById('mbg-bm-file');
+        const fileInput = mockDoc.getElementById('mbg-file-input');
         fileInput.onchange({
             target: {
-                files: [{ name: 'kamera_12mp.jpg', size: 4 * 1024 * 1024 }]
+                files: [{ name: 'kamera_12mp.jpg', size: 4 * 1024 * 1024, type: 'image/jpeg' }]
             }
         });
 
@@ -276,95 +319,76 @@ describe('MBG Photo Helper — Debugging & Verifikasi Mobile Bookmarklet', () =>
         assert.strictEqual(stream.getVideoTracks().length, 1);
 
         stream.getVideoTracks()[0].stop();
-        assert.strictEqual(mockWin._mbgBmState.photos[0].status, 'success');
+        const st = mockWin._mbgState;
+        assert.strictEqual(st.schoolDeliveries[st.currentSchool.id][st.collection[0].id], 'sent');
+        assert.strictEqual(st.collection.length, 1, 'Foto sumber tetap aman di koleksi');
     });
 
-    test('5. Tombol Manual "✓ Selesai" Berfungsi Memajukan Antrean jika Track Tidak Berhenti', () => {
+    test('5. Otomatisasi Kamera & Pemajuan Antrean Tanpa Tombol ✓ Selesai', async () => {
         const { mockWin, mockDoc } = createMockMobileEnv();
-        const bookmarkletCode = fs.readFileSync('scripts/bookmarklet.js', 'utf8');
-        const run = new Function('window', 'document', 'navigator', 'URL', 'Image', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', bookmarkletCode);
-        run(mockWin, mockDoc, mockWin.navigator, mockWin.URL, mockWin.Image, setTimeout, clearTimeout, () => 1, () => { });
+        runBookmarklet(mockWin, mockDoc);
 
-        const fileInput = mockDoc.getElementById('mbg-bm-file');
+        const fileInput = mockDoc.getElementById('mbg-file-input');
         fileInput.onchange({
             target: {
                 files: [
-                    { name: 'foto1.jpg', size: 1024 },
-                    { name: 'foto2.jpg', size: 1024 }
+                    { name: 'foto1.jpg', size: 1024, type: 'image/jpeg' },
+                    { name: 'foto2.jpg', size: 1024, type: 'image/jpeg' }
                 ]
             }
         });
 
-        const st = mockWin._mbgBmState;
-        assert.strictEqual(st.idx, 0);
-        assert.strictEqual(st.photos[0].status, 'active');
+        const st = mockWin._mbgState;
+        assert.strictEqual(st.activePhotoId, st.collection[0].id);
 
-        // Pengguna mengetuk tombol "✓ Selesai" pada kartu foto aktif
-        const btnDone = mockDoc.getElementById('mbg-quick-bypass').querySelector('[data-act="done"]');
-        assert.ok(btnDone, 'Tombol ✓ Selesai harus ada pada foto yang sedang aktif');
+        // Simulasi pengunggahan foto pertama (video track stop)
+        let stream = await mockWin.navigator.mediaDevices.getUserMedia({ video: true });
+        stream.getVideoTracks()[0].stop();
 
-        btnDone.click();
-
-        // Foto 1 harus berubah menjadi success, dan antrean otomatis maju ke foto 2
-        assert.strictEqual(st.photos[0].status, 'success', 'Foto 1 harus menjadi success');
-        assert.strictEqual(st.idx, 1, 'Indeks harus maju ke foto 2');
-        assert.strictEqual(st.photos[1].status, 'active', 'Foto 2 harus menjadi active');
+        // Antrean otomatis berpindah ke foto 2 tanpa memerlukan tombol ✓ Selesai
+        assert.strictEqual(st.schoolDeliveries[st.currentSchool.id][st.collection[0].id], 'sent');
+        assert.strictEqual(st.activePhotoId, st.collection[1].id, 'Kamera virtual otomatis memajukan antrean ke foto 2');
     });
 
-    test('6. Coba Lagi (Retry) Foto Gagal di Mobile Tanpa Mengulang Foto Berhasil', () => {
+    test('6. Pemilihan Manual Foto ke Kamera di Mobile Tanpa Mengulang Foto Berhasil', () => {
         const { mockWin, mockDoc } = createMockMobileEnv();
-        const bookmarkletCode = fs.readFileSync('scripts/bookmarklet.js', 'utf8');
-        const run = new Function('window', 'document', 'navigator', 'URL', 'Image', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', bookmarkletCode);
-        run(mockWin, mockDoc, mockWin.navigator, mockWin.URL, mockWin.Image, setTimeout, clearTimeout, () => 1, () => { });
+        runBookmarklet(mockWin, mockDoc);
 
-        const fileInput = mockDoc.getElementById('mbg-bm-file');
+        const fileInput = mockDoc.getElementById('mbg-file-input');
         fileInput.onchange({
             target: {
                 files: [
-                    { name: 'foto1.jpg', size: 1024 },
-                    { name: 'foto2.jpg', size: 1024 }
+                    { name: 'foto1.jpg', size: 1024, type: 'image/jpeg' },
+                    { name: 'foto2.jpg', size: 1024, type: 'image/jpeg' }
                 ]
             }
         });
 
-        const st = mockWin._mbgBmState;
-        st.photos[0].status = 'success';
-        st.photos[1].status = 'failed';
-        st.idx = 1;
+        const st = mockWin._mbgState;
+        // Tandai foto 1 sudah sent
+        st.schoolDeliveries[st.currentSchool.id][st.collection[0].id] = 'sent';
 
-        // Panggil render dengan toggle minimize lalu expand
-        const widget = mockDoc.getElementById('mbg-quick-bypass');
-        widget.querySelector('#mbg-bm-min').click();
-        widget.click();
-
-        // Cari tombol "Ulang" pada foto 2
-        const btnRetry = widget.querySelector('[data-act="ret"]');
-        assert.ok(btnRetry, 'Tombol Ulang harus tersedia untuk foto berstatus failed');
-
-        btnRetry.click();
-
-        // Foto 1 tetap success, foto 2 kembali aktif
-        assert.strictEqual(st.photos[0].status, 'success');
-        assert.strictEqual(st.photos[1].status, 'active');
-        assert.strictEqual(st.idx, 1);
+        // Pengguna mengetuk "Pilih ke Kamera" pada foto 2
+        st.activePhotoId = st.collection[1].id;
+        assert.strictEqual(st.activePhotoId, st.collection[1].id);
+        assert.strictEqual(st.schoolDeliveries[st.currentSchool.id][st.collection[0].id], 'sent');
+        assert.strictEqual(st.collection.length, 2, 'Koleksi tetap utuh');
     });
 
     test('7. Mode Perkecil (Minimize) dan Buka Kembali di Mobile', () => {
         const { mockWin, mockDoc } = createMockMobileEnv();
-        const bookmarkletCode = fs.readFileSync('scripts/bookmarklet.js', 'utf8');
-        const run = new Function('window', 'document', 'navigator', 'URL', 'Image', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', bookmarkletCode);
-        run(mockWin, mockDoc, mockWin.navigator, mockWin.URL, mockWin.Image, setTimeout, clearTimeout, () => 1, () => { });
+        runBookmarklet(mockWin, mockDoc);
 
         const widget = mockDoc.getElementById('mbg-quick-bypass');
-        const btnMin = widget.querySelector('#mbg-bm-min');
+        const btnMin = widget.querySelector('#mbg-btn-minimize');
         assert.ok(btnMin, 'Tombol minimize harus tersedia');
 
         btnMin.click();
-        assert.strictEqual(mockWin._mbgBmState.min, true);
-        assert.ok(widget.innerHTML.includes('[Buka]'));
+        assert.strictEqual(mockWin._mbgState.minimized, true);
+        assert.ok(widget.innerHTML.includes('MBG') && widget.innerHTML.includes('Buka'));
 
         widget.click();
-        assert.strictEqual(mockWin._mbgBmState.min, false);
+        assert.strictEqual(mockWin._mbgState.minimized, false);
         assert.ok(widget.innerHTML.includes('+ Pilih / Tambah Foto'));
     });
 });

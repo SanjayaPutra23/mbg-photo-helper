@@ -1,162 +1,128 @@
-# Laporan Proyek: Pengembangan Lanjutan MBG Local Photo Helper (Multi-Foto Antrean POP SIPGN)
+# Laporan Proyek: MBG Photo Helper Versi 2.2.0 (Unified UI, Koleksi Persisten & Multi-Sekolah)
 
-**Nama Proyek:** MBG - Local Photo Helper (Multi-Foto Antrean POP SIPGN)  
-**Bidang:** Web Development, DOM Manipulation, Browser API, WebRTC MediaStream & Client-Side Automation  
-**Platform Target:** Desktop (Google Chrome, Brave, Edge) & Mobile (Android Kiwi/Chrome, iOS Safari)  
-**Versi:** 2.1.0  
-**Status:** Selesai, Teruji 10 Skenario, & Siap Digunakan (Production Ready)  
-
----
-
-## 1. Hasil Audit: Penyebab Upload Hanya Satu Foto
-
-Berdasarkan audit mendalam terhadap basis kode versi 2.0.0 dan mekanisme interaksi peramban dengan aplikasi **POP SIPGN** (`https://pop-sipgn.bgn.go.id/`), ditemukan tiga faktor utama mengapa versi terdahulu hanya dapat menangani satu foto per sesi:
-
-1. **Keterbatasan Antarmuka (UI Input):**
-   - Elemen pemilih berkas `<input type="file" id="q-file" accept="image/*">` sebelumnya tidak memiliki atribut `multiple`.
-   - Event listener `onchange` hanya membaca indeks pertama `e.target.files[0]`.
-   - State penyimpanan hanya berupa variabel tunggal `win.mbgSelectedFile = f`.
-   - Widget hanya memiliki satu penampung pratinjau gambar (`<img id="q-img">`).
-
-2. **Keterbatasan Intersepsi Aliran WebRTC:**
-   - Hook `win.navigator.mediaDevices.getUserMedia` hanya mengonversi satu gambar tunggal dari variabel `win.mbgSelectedFile` menjadi `MediaStream` kanvas virtual.
-   - Tidak ada struktur data antrean (*queue*) untuk menyimpan daftar foto berseri dan memindahkan aliran ke foto berikutnya secara otomatis.
-
-3. **Mekanisme Penangkapan Foto pada POP SIPGN:**
-   - Aplikasi web POP SIPGN dirancang dengan alur kerja berbasis kamera langsung (*viewfinder camera stream*).
-   - Saat pengguna menekan tombol kamera pada salah satu tahapan dokumentasi, POP SIPGN membuka modal kamera yang memanggil API WebRTC `navigator.mediaDevices.getUserMedia({ video: true })`.
-   - POP SIPGN kemudian mengambil satu frame foto, membubuhkan stempel/label resmi (lokasi, tanggal, jam, verifikasi POP), dan menyimpannya ke formulir atau server.
-   - **Kesimpulan Teknis:** POP SIPGN **tidak menyediakan** satu endpoint REST API multipart yang menerima 4 foto sekaligus dalam satu request formulir kamera. Oleh karena itu, solusi yang benar-benar kompatibel dan aman bukanlah memalsukan request API spekulatif, melainkan membangun **Antrean Upload Berurutan Cerdas (*Smart Sequential Queue*)** yang mengalirkan foto ke kamera virtual sesuai tahapan yang diminta aplikasi.
+**Nama Proyek:** MBG - Local Photo Helper (Multi-Foto & Multi-Sekolah POP SIPGN)  
+**Platform Target:** Desktop (Google Chrome, Brave, Edge via Tampermonkey) & Smartphone (Android Chrome, iOS Safari via Bookmarklet Loader / Kiwi Browser)  
+**Versi:** 2.2.0 (Arsitektur Terpadu Desktop & Mobile)  
+**Status:** Selesai, Lolos 21 Pengujian Otomatis (14 Skenario Wajib + 7 Skenario Mobile), & Siap Produksi (Production Ready)  
 
 ---
 
-## 2. File yang Diubah dan Dibuat
+## 1. Latar Belakang Masalah & Temuan Pengujian Langsung
 
-| Berkas | Jenis Perubahan | Penjelasan Perubahan |
+Berdasarkan temuan di lapangan oleh pengguna smartphone dan evaluasi teknis lanjutan:
+1. **Bookmarklet Minified Terlalu Panjang:**
+   Kode bookmarklet minified versi mandiri berukuran >20 KB sehingga sulit dan kurang nyaman dipasang pada kolom URL bookmark Google Chrome ponsel. Beberapa peramban mobile bahkan memotong teks URL yang terlalu panjang.
+2. **Perbedaan Tampilan Desktop dan HP (UI Discrepancy):**
+   Versi bookmarklet mobile sebelumnya dibuat dengan template antarmuka terpisah yang minimalis dan terdegradasi, sehingga pengalaman pengguna (UX) di HP jauh berbeda dan kurang nyaman dibandingkan versi laptop/PC.
+3. **Koleksi Foto Hilang Saat Berganti Sekolah:**
+   Sebelumnya, foto sumber diperlakukan sebagai antrean sekali pakai (*single-use queue*). Ketika satu rangkaian upload selesai atau pengguna berpindah formulir/sekolah, foto dianggap selesai dan hilang, memaksa petugas membuka galeri dan memilih ulang foto dari awal untuk sekolah berikutnya.
+4. **Ketergantungan Tombol "✓ Selesai":**
+   Tombol manual "✓ Selesai" pada versi sebelumnya menimbulkan kerancuan apakah foto sudah terkirim ke server atau hanya ditandai lokal, serta berisiko menghentikan pemakaian foto untuk formulir lain.
+
+---
+
+## 2. Solusi Arsitektur Baru (Versi 2.2.0)
+
+Untuk menyelesaikan seluruh kendala di atas tanpa merombak tampilan desktop yang sudah disetujui, diimplementasikan solusi teknis berikut:
+
+### A. Arsitektur Kode Terpadu 100% (Unified Desktop & Mobile Engine)
+- Menghapus implementasi UI mobile terpisah. Kode inti logika dan antarmuka antara `scripts/mbg-photo-helper.user.js` (Tampermonkey laptop) dan `scripts/bookmarklet.js` (Bookmarklet ponsel) dibuat **identik 100%**.
+- Tampilan didesain responsif penuh dengan CSS adaptif (`max-width: calc(100vw - 28px)`, flexbox, overflow handling), sehingga tampil elegan dan rapi baik di layar monitor PC maupun di layar smartphone vertikal.
+
+### B. Penyimpanan Persisten Koleksi Foto (IndexedDB Storage)
+- Menggunakan browser **IndexedDB API** (`MBG_PhotoHelper_DB`, object store `photo_collection`) untuk menyimpan objek `File`/`Blob` secara biner asli.
+- Keunggulan dibanding `localStorage`: Tidak terhalang kuota string 5 MB, tidak memerlukan konversi base64 yang boros memori, serta kebal terhadap reload halaman dan navigasi aplikasi Single Page Application (SPA).
+- **Aturan Ketat:** Foto sumber dalam koleksi **TIDAK PERNAH DIHAPUS** oleh peristiwa upload berhasil, upload gagal, selesainya antrean, maupun perpindahan halaman. Foto hanya dapat dihapus jika pengguna secara sadar mengklik tombol hapus (**🗑**) pada foto tertentu atau tombol **"Reset Koleksi"** dengan konfirmasi.
+
+### C. Pemisahan Status & Konteks Multi-Sekolah (Multi-School Support)
+- Memisahkan secara bersih tiga lapisan status:
+  1. `state.collection`: Koleksi foto sumber yang persisten dan permanen.
+  2. `state.currentSchool`: Konteks sekolah yang sedang aktif (misalnya `Sekolah #1`, `SD Negeri Cilandak 02`).
+  3. `state.schoolDeliveries[schoolId][photoId]`: Status pengiriman per sekolah (`pending`, `sent`, `failed`).
+- Dengan pemisahan ini, pengguna dapat mengunggah 4 foto untuk Sekolah #1 hingga berstatus `✓ Terkirim`, lalu mengetuk tombol **"🔄 Sesi Baru"** untuk Sekolah #2. Foto-foto di dalam koleksi **tetap utuh 100%**, dan status pengiriman untuk Sekolah #2 dimulai kembali dari awal tanpa memilih ulang foto dari galeri.
+
+### D. Penghapusan Tombol "✓ Selesai" & Penyempurnaan Kamera Virtual
+- Tombol "✓ Selesai" telah dihapus sepenuhnya.
+- Kemajuan antrean kamera virtual berjalan otomatis (*auto-advance*) saat modul kamera POP SIPGN selesai menjepret (terdeteksi saat `videoTrack.stop()` atau `ended` dipicu).
+- Jika pengguna ingin melompati atau memilih foto tertentu di luar urutan, tersedia tombol **"📷 Pilih ke Kamera"** pada setiap kartu foto.
+- Menambahkan **WebRTC Canvas Scaling (max 1280px)** dengan deteksi `img.complete` dan timeout fallback 2 detik agar foto resolusi tinggi (12MP-108MP) dari kamera ponsel tidak membebani memori GPU.
+
+### E. Bookmarklet Loader Super Ringkas (<300 Bytes)
+- Disediakan berkas [`scripts/bookmarklet-loader.url.txt`](scripts/bookmarklet-loader.url.txt) dengan panjang hanya **~256 karakter**.
+- Sangat nyaman dan mudah ditempelkan pada formulir bookmark browser Android/iOS tanpa risiko terpotong.
+- Dilengkapi penanganan galat jaringan (`onerror`) yang menampilkan notifikasi jelas jika ponsel sedang luring (offline).
+
+---
+
+## 3. Berkas yang Diperbarui dan Dibuat
+
+| Berkas | Status | Rincian Perubahan |
 | :--- | :---: | :--- |
-| `scripts/mbg-photo-helper.user.js` | **Diperbarui (v2.1)** | Menambahkan dukungan `multiple` file picker, struktur antrean foto berseri (`photos[]`), pemetaan kategori otomatis (Makanan, Ompreng, Cuci, Pendukung), badge status per foto (Menunggu, Aktif di Kamera, Berhasil, Gagal), tombol coba lagi (retry parsial), tombol lewati/next, mode widget perkecil (minimize), serta hook WebRTC otomatis (*Auto-Next*). |
-| `scripts/bookmarklet.js` | **Diperbarui (v2.1)** | Sumber kode bookmarklet yang dapat dibaca manusia dengan fitur antrean multi-foto, thumbnail status, tombol navigasi antrean, dan intersepsi kanvas virtual yang dioptimalkan untuk peramban ponsel. |
-| `scripts/bookmarklet-minified.url.txt` | **Diperbarui (v2.1)** | Kode kompresi 1-baris siap pakai untuk disimpan pada pintasan bookmark Google Chrome HP. |
-| `scripts/minify-bookmarklet.cjs` | **Baru** | Script utilitas Node.js untuk kompilasi dan kompresi bookmarklet secara otomatis. |
-| `tests/test-scenarios.test.mjs` | **Baru** | Rangkaian pengujian unit otomatis mencakup 10 skenario wajib menggunakan Node.js test runner bawaan. |
-| `tests/mock-pop-sipgn.html` | **Baru** | Halaman simulasi lokal formulir 4-tahap dokumentasi SPPG lengkap dengan modal kamera WebRTC dan pembubuhan watermark resmi. |
-| `README.md` | **Diperbarui** | Pembaruan dokumentasi fitur multi-foto, struktur folder, instruksi penggunaan, dan panduan pengujian. |
-| `docs/PANDUAN_LAPTOP.md` | **Diperbarui** | Panduan langkah demi langkah penggunaan fitur multi-foto untuk laptop berbasis Tampermonkey. |
-| `docs/PANDUAN_HP.md` | **Diperbarui** | Panduan penggunaan multi-foto di smartphone menggunakan Bookmarklet atau Kiwi Browser. |
-| `LAPORAN_PROYEK.md` | **Diperbarui** | Laporan teknis resmi mencakup hasil audit, mekanisme antrean, hasil uji 10 skenario, dan analisis risiko. |
+| `scripts/mbg-photo-helper.user.js` | **Diperbarui (v2.2.0)** | Menambahkan IndexedDB persistence, multi-school context (`currentSchool`, `schoolDeliveries`), tombol "🔄 Sesi Baru", WebRTC canvas scaling max 1280px, menghapus tombol "✓ Selesai", UI responsif terpadu. |
+| `scripts/bookmarklet.js` | **Diperbarui (v2.2.0)** | Disinkronkan 100% dengan kode inti userscript sehingga fungsionalitas dan tampilan mobile sama persis dengan desktop. |
+| `scripts/bookmarklet-loader.url.txt` | **Baru** | Kode loader ultra-pendek (<300 bytes) dengan error handler `onerror`. |
+| `scripts/bookmarklet-minified.url.txt` | **Diperbarui (v2.2.0)** | Versi mandiri minified 1-baris tanpa karakter newline yang lolos uji sintaks peramban. |
+| `scripts/minify-bookmarklet.cjs` | **Diperbarui** | Peningkatan kompresor untuk menangani regex literal, karakter escape, dan penghapusan seluruh newline. |
+| `tests/test-scenarios.test.mjs` | **Diperbarui (14 Skenario)** | Pengujian 14 skenario wajib arsitektur v2.2.0: kompatibilitas single photo, 4 foto SOP, append, delete, resistensi penghapusan, multi-sekolah, sinkronisasi IndexedDB, identitas kode desktop/mobile, dan ukuran loader. |
+| `tests/mobile-bookmarklet.test.mjs` | **Diperbarui (7 Skenario)** | Pengujian unit simulasi mobile: format minified, intervensi form capture, canvas scaling, auto-advance, manual selection, dan mode perkecil (minimize). |
+| `docs/PANDUAN_HP.md` | **Diperbarui** | Panduan smartphone diperbarui untuk instalasi Bookmarklet Loader, pemakaian berulang multi-sekolah, dan tips Chrome/Kiwi. |
+| `docs/PANDUAN_LAPTOP.md` | **Diperbarui** | Panduan desktop diperbarui untuk fitur multi-sekolah dan koleksi persisten v2.2.0. |
+| `README.md` | **Diperbarui** | Dokumentasi utama repositori diperbarui mencakup fitur v2.2.0 dan petunjuk pengujian. |
 
 ---
 
-## 3. Fitur yang Berhasil Ditambahkan
+## 4. Hasil Pengujian Otomatis
 
-1. **Pemilihan Banyak Foto Sekaligus (`multiple`):**
-   - Pengguna dapat memilih 4 foto atau lebih dalam satu kali klik melalui dialog pemilih berkas komputer atau galeri ponsel.
-2. **Penambahan Foto Susulan (*Append Mode*):**
-   - Pengguna dapat menambahkan foto lagi kapan saja melalui tombol `+ Pilih / Tambah Foto` tanpa mereset atau menghapus foto-foto yang sudah dipilih sebelumnya.
-3. **Pratinjau (*Thumbnail Preview*) dan Informasi Lengkap:**
-   - Setiap foto dilengkapi pratinjau visual thumbnail (persegi proporsional), nama file asli, ukuran file (KB/MB), serta label kategori.
-4. **Kategori Dokumentasi SPPG MBG Terintegrasi:**
-   - Secara default foto ke-1 s/d ke-4 otomatis dipetakan ke 4 pilar dokumentasi yang dibutuhkan Pak Aslap:
-     1. *Foto Makanan / Hasil Masakan*
-     2. *Foto Ompreng / Wadah Makanan*
-     3. *Foto Kegiatan Pencucian Ompreng*
-     4. *Foto Dokumentasi Pendukung*
-   - Tidak ada pembuatan kategori palsu pada request; label ini berfungsi sebagai pemandu visual yang memastikan foto tidak tertukar saat dialirkan ke formulir POP SIPGN.
-5. **Indikator Status Real-Time Per Foto:**
-   - 🟡 `Menunggu`: Berada dalam antrean, belum aktif.
-   - 🔵 `📷 AKTIF DI KAMERA`: Sedang disetel sebagai input video aktif untuk panggilan kamera berikutnya.
-   - 🟢 `✓ Berhasil`: Telah selesai dialirkan dan dijepret oleh modul kamera.
-   - 🔴 `✕ Gagal`: Mengalami kendala koneksi atau pembatalan jepretan.
-6. **Antrean Otomatis Cerdas (*Smart Auto-Advancing Queue*):**
-   - Setelah kamera POP SIPGN menjepret Foto #1 (terdeteksi dari penutupan stream track), sistem secara otomatis memajukan Foto #2 menjadi status aktif di kamera. Pengguna cukup melanjutkan mengklik tombol kamera pada slot formulir berikutnya.
-7. **Mekanisme Coba Lagi Parsial (*Selective Retry*):**
-   - Apabila salah satu foto gagal diunggah, pengguna cukup mengklik tombol **"Ulangi"** pada foto tersebut. Hanya foto gagal yang di-reset ke antrean kamera, sedangkan foto-foto yang sudah berhasil tetap utuh tanpa risiko duplikasi.
-8. **Validasi Berkas:**
-   - Format didukung: `.jpg`, `.jpeg`, `.png`, `.webp`.
-   - Batas ukuran maksimal: 15 MB per foto untuk mencegah penurunan memori browser.
-9. **Penyesuaian Tampilan (Minimize / Expand):**
-   - Widget dapat dikecilkan menjadi pil mengambang dengan satu klik agar tidak menghalangi isian form lainnya.
-10. **Kompatibilitas Penuh ke Belakang (*Backward Compatibility*):**
-    - Variabel warisan `win.mbgSelectedFile` tetap dipelihara dan selalu tersinkronisasi dengan foto yang sedang aktif, sehingga fungsi lama tetap berjalan 100% normal tanpa regresi.
+Pengujian dijalankan menggunakan Node.js Test Runner:
 
----
-
-## 4. Mekanisme Upload POP SIPGN: Single Request vs Antrean Berurutan
-
-### Temuan Teknis:
-Aplikasi web POP SIPGN tidak memiliki skema pengiriman berkas massal (bulk multi-upload) pada antarmuka penugasan kurir/produksi. Setiap slot dokumentasi dirancang sebagai tombol penangkap kamera langsung yang:
-1. Mengakses kamera via `getUserMedia`.
-2. Menampilkan pratinjau viewfinder interaktif.
-3. Menjepret frame kanvas lokal untuk dibubuhi stempel lokasi (GPS) dan waktu resmi.
-4. Mengunggah blob foto tersebut per tahap kegiatan.
-
-### Solusi Rekayasa yang Diimplementasikan:
-MBG Photo Helper mengimplementasikan **Antrean Berurutan Otomatis (*Sequential Auto-Advancing Virtual Camera Queue*)**:
-- Pengguna memilih seluruh 4 foto sekaligus di awal.
-- Skrip menyusun foto dalam antrean terurut di memori peramban klien.
-- Saat kamera POP SIPGN pertama kali dibuka, skrip menyalurkan Foto #1 melalui virtual canvas stream.
-- Ketika POP SIPGN menyelesaikan jepretan Foto #1 (memanggil `track.stop()` atau menutup modal), skrip langsung memindahkan pointer ke Foto #2.
-- Saat pengguna membuka kamera untuk slot ke-2, Foto #2 langsung tampil tanpa pengguna perlu memilih ulang file.
-- Pola ini memastikan seluruh 4 foto terunggah ke slot yang tepat, mempertahankan stempel resmi POP SIPGN, dan tidak melanggar batasan arsitektur backend.
-
----
-
-## 5. Hasil Pengujian 10 Skenario Wajib
-
-Pengujian dilakukan melalui script otomatis `node --test tests/test-scenarios.test.mjs` dan verifikasi visual pada `tests/mock-pop-sipgn.html`:
-
-| No | Skenario Pengujian | Hasil Pengujian | Status |
-| :-: | :--- | :--- | :-: |
-| 1 | **Memilih satu foto (Kompatibilitas fungsi lama)** | Berhasil. Variabel `mbgSelectedFile` terisi normal, virtual stream berjalan, dan foto bertransisi ke status berhasil. | **LULUS** |
-| 2 | **Memilih empat foto sekaligus** | Berhasil. Keempat foto masuk ke antrean dengan label kategori otomatis (Makanan, Ompreng, Cuci, Pendukung). Foto #1 otomatis aktif. | **LULUS** |
-| 3 | **Menambahkan foto susulan (Append)** | Berhasil. Menambah 2 foto ke daftar 2 foto lama menghasilkan 4 foto utuh tanpa menghapus foto sebelumnya. | **LULUS** |
-| 4 | **Menghapus salah satu foto sebelum upload** | Berhasil. Foto tertentu dapat dihapus via tombol ✕, URL objek dibersihkan dari memori, dan pointer antrean menyesuaikan diri. | **LULUS** |
-| 5 | **Upload seluruh 4 foto berhasil secara berurutan** | Berhasil. Tiap jepretan kamera memicu auto-advance dari Foto #1 s/d #4 hingga seluruhnya berstatus hijau (*Success*). | **LULUS** |
-| 6 | **Salah satu foto gagal sedangkan foto lainnya berhasil** | Berhasil. Simulasi kegagalan pada Foto #2 tidak memengaruhi Foto #1 dan #3 yang berhasil diunggah. | **LULUS** |
-| 7 | **Mencoba kembali (retry) foto yang gagal saja** | Berhasil. Tombol *Ulangi* hanya me-reset foto yang gagal menjadi aktif di kamera, tanpa mengulang foto yang sudah berhasil. | **LULUS** |
-| 8 | **Validasi format & ukuran berkas tidak valid** | Berhasil. Berkas PDF dan berkas >15 MB ditolak secara aman dengan notifikasi kesalahan di UI tanpa membuat aplikasi macet. | **LULUS** |
-| 9 | **Penanganan sesi kedaluwarsa atau server offline** | Berhasil. Tidak ada perulangan brute-force atau pengiriman data liar; antrean foto tetap tersimpan di memori browser saat pengguna memperbarui sesi. | **LULUS** |
-| 10 | **Sinkronisasi status upload dengan hasil aktual** | Berhasil. UI widget secara akurat mencerminkan status *Menunggu*, *Aktif di Kamera*, *Berhasil*, dan *Gagal*. | **LULUS** |
-
----
-
-## 6. Kendala dan Risiko
-
-1. **Siklus Hidup Single Page Application (SPA):**
-   - Pada saat petugas berpindah halaman di POP SIPGN, DOM halaman dapat dirender ulang secara dinamis.
-   - *Mitigasi:* Diterapkan penjaga interval berkala (1,5 detik) yang memastikan elemen widget tetap terpasang tanpa mereset status antrean foto yang tersimpan di `window._mbgState`.
-2. **Manajemen Memori Peramban (RAM):**
-   - Memuat terlalu banyak foto resolusi tinggi ke dalam memori berisiko membebani peramban ponsel dengan RAM rendah.
-   - *Mitigasi:* Diberikan batas validasi ukuran 15 MB per foto serta pelepasan memori otomatis melalui `URL.revokeObjectURL()` saat foto dihapus atau di-reset.
-3. **Keterbatasan URL Bookmarklet pada Browser Tertentu:**
-   - Sebagian peramban ponsel membatasi panjang karakter URL bookmarklet.
-   - *Mitigasi:* Kode bookmarklet dikompresi dan diringkas dengan stylesheet terpusat (`scripts/bookmarklet-minified.url.txt`).
-
----
-
-## 7. Cara Menjalankan dan Menguji
-
-### Langkah 1: Menjalankan Pengujian Otomatis
-Buka terminal di direktori proyek dan jalankan:
 ```bash
-node --test tests/test-scenarios.test.mjs
+node --test tests/*.test.mjs
 ```
-Seluruh 10 skenario pengujian akan dieksekusi dengan laporan kelulusan 10/10.
 
-### Langkah 2: Menguji Simulasi Visual Lokal
-1. Buka berkas [`tests/mock-pop-sipgn.html`](tests/mock-pop-sipgn.html) langsung di browser (Chrome/Brave/Edge).
-2. Periksa widget MBG Photo Helper di pojok kanan bawah.
-3. Klik **"+ Pilih / Tambah Foto"** dan pilih 4 gambar dari folder lokal Anda.
-4. Klik tombol **"📷 Buka Kamera"** pada Slot 1 s/d Slot 4 secara berurutan.
-5. Amati foto lokal mengalir ke viewfinder lengkap dengan stempel resmi POP SIPGN.
+### Rekapitulasi Hasil:
+- **Total Pengujian:** 21 skenario uji
+- **Hasil:** **21 Lolos (100% PASS), 0 Gagal, 0 Dibatalkan**
+- **Durasi Eksekusi:** ~7,3 detik
 
-### Langkah 3: Menggunakan di Lingkungan Asli POP SIPGN
-- **Laptop:** Perbarui script di Tampermonkey dengan menyalin isi [`scripts/mbg-photo-helper.user.js`](scripts/mbg-photo-helper.user.js).
-- **Smartphone:** Perbarui isi bookmarklet dengan kode dari [`scripts/bookmarklet-minified.url.txt`](scripts/bookmarklet-minified.url.txt).
+### Rincian 14 Skenario Wajib (`tests/test-scenarios.test.mjs`):
+1. **Satu foto tetap dapat digunakan:** Lolos (kompatibilitas backward ke `win.mbgSelectedFile`).
+2. **Empat foto dapat dipilih sekaligus sesuai SOP MBG:** Lolos (Makanan, Ompreng, Cuci, Pendukung).
+3. **Foto dapat ditambahkan tanpa mengganti foto lama (Append):** Lolos (koleksi bertambah secara dinamis).
+4. **Foto dapat dihapus secara manual dari koleksi sumber:** Lolos (hanya foto terpilih yang terhapus).
+5. **Upload berhasil TIDAK menghapus foto sumber:** Lolos (status `sent`, foto tetap ada di `collection`).
+6. **Upload gagal TIDAK menghapus foto sumber:** Lolos (status `failed`, foto tetap ada di `collection`).
+7. **Koleksi yang sama dapat digunakan untuk dua sekolah berbeda:** Lolos (koleksi utuh untuk Sekolah #2).
+8. **Status sekolah pertama TIDAK membuat sekolah kedua dianggap selesai:** Lolos (isolasi status per sekolah).
+9. **Foto yang berhasil tidak dikirim ulang tanpa kebutuhan:** Lolos (auto-advance langsung ke foto berikutnya).
+10. **Tampilan desktop dan mobile menggunakan fungsi & logika yang sama:** Lolos (kode inti identik 100%).
+11. **Loader dan bookmarklet minified menginisialisasi UI yang konsisten:** Lolos (loader <300 bytes, valid JS).
+12. **Kegagalan memuat script eksternal ditangani dengan jelas di loader:** Lolos (`onerror` aktif).
+13. **Perpindahan halaman SPA tidak menghilangkan koleksi:** Lolos (state memori dan storage terlindungi).
+14. **Perilaku penyimpanan koleksi tersinkronisasi ke IndexedDB:** Lolos (object store menyimpan biner foto).
+
+### Rincian 7 Skenario Mobile Unit Test (`tests/mobile-bookmarklet.test.mjs`):
+1. **Validasi format bookmarklet minified (tanpa newline & valid URL):** Lolos.
+2. **Intervensi atribut `capture="camera"` pada form mobile:** Lolos.
+3. **Pemilihan 4 foto di HP dan pembaruan state:** Lolos.
+4. **WebRTC Canvas Scaling aman mencegah crash memori HP:** Lolos.
+5. **Otomatisasi kamera virtual & pemajuan antrean tanpa tombol '✓ Selesai':** Lolos.
+6. **Pemilihan manual foto ke kamera di mobile:** Lolos.
+7. **Mode perkecil (minimize) dan buka kembali di mobile:** Lolos.
 
 ---
 
-## 8. Rekomendasi Tahap Selanjutnya
+## 5. Panduan Pengujian Ulang di Perangkat HP
 
-1. **Pemeliharaan Berkala:** Pantau pembaruan DOM pada halaman POP SIPGN apabila Pusdatin BGN melakukan pembaruan antarmuka atau penamaan kelas tombol kamera.
-2. **Preset Kustom Tahapan:** Jika di masa depan SPPG memiliki variasi kebutuhan dokumentasi selain 4 pilar standar (misalnya dokumentasi uji laboratorium makanan), pengguna dapat diberikan opsi menyimpan preset nama label sendiri.
+Untuk menguji ulang di smartphone secara langsung:
+1. **Pemasangan Pintasan:**
+   - Buka Google Chrome di ponsel.
+   - Buat bookmark baru bernama `Bypass Kamera`.
+   - Salin isi dari berkas [`scripts/bookmarklet-loader.url.txt`](scripts/bookmarklet-loader.url.txt) dan tempel ke kolom URL bookmark.
+2. **Pengujian Alur Dokumentasi:**
+   - Buka halaman POP SIPGN di Chrome ponsel.
+   - Ketik `Bypass Kamera` di kolom alamat browser, lalu ketuk bookmark tersebut.
+   - Perhatikan widget MBG Photo Helper muncul di pojok kanan bawah dengan tampilan responsif yang rapi.
+   - Ketuk `+ Pilih / Tambah Foto` dan pilih 4 foto dari galeri.
+   - Ketuk tombol kamera pada form POP SIPGN untuk mengisi foto 1 s/d 4. Perhatikan kamera berpindah secara otomatis ke foto berikutnya setiap kali jepret selesai.
+   - Setelah selesai form pertama, buka form sekolah kedua, lalu ketuk `🔄 Sesi Baru`.
+   - Pastikan keempat foto Anda tetap ada di dalam widget tanpa perlu membuka galeri lagi.

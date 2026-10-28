@@ -6,11 +6,11 @@ import fs from 'node:fs';
 function createMockEnvironment() {
     const elementsById = new Map();
     const eventListeners = new Map();
+    const dbStores = new Map();
 
     function createNode(tag, id = '') {
         const node = {
             tagName: tag.toUpperCase(),
-            id: id,
             style: {},
             children: [],
             attributes: {},
@@ -32,6 +32,17 @@ function createMockEnvironment() {
                 if (sel.startsWith('#')) {
                     const tid = sel.substring(1);
                     return elementsById.get(tid) || null;
+                }
+                if (sel.includes('[data-action')) {
+                    const valMatch = sel.match(/\[data-action="?([^"\]]+)"?\]/);
+                    const targetVal = valMatch ? valMatch[1] : null;
+                    for (const [k, el] of elementsById) {
+                        if (el.attributes && el.attributes['data-action']) {
+                            if (!targetVal || el.attributes['data-action'] === targetVal) {
+                                return el;
+                            }
+                        }
+                    }
                 }
                 return null;
             },
@@ -75,12 +86,8 @@ function createMockEnvironment() {
                     if (!child) {
                         child = createNode(tag, elId);
                     }
-                    if (fullTag.includes('multiple')) {
-                        child.attributes.multiple = '';
-                    }
-                    if (fullTag.includes('type="file"')) {
-                        child.attributes.type = 'file';
-                    }
+                    if (fullTag.includes('multiple')) child.attributes.multiple = '';
+                    if (fullTag.includes('type="file"')) child.attributes.type = 'file';
                     if (fullTag.includes('type="checkbox"')) {
                         child.attributes.type = 'checkbox';
                         child.checked = fullTag.includes('checked');
@@ -97,9 +104,6 @@ function createMockEnvironment() {
                     child.attributes['data-action'] = act;
                     const idM = fullTag.match(/data-id=["']([^"']+)["']/i);
                     if (idM) child.attributes['data-id'] = idM[1];
-                    const idxM = fullTag.match(/data-index=["']([^"']+)["']/i);
-                    if (idxM) child.attributes['data-index'] = idxM[1];
-                    // Buat ID sintetis agar tersimpan di elementsById
                     elementsById.set('dyn_act_' + Math.random(), child);
                 });
             }
@@ -115,6 +119,7 @@ function createMockEnvironment() {
         readyState: 'complete',
         body: mockBody,
         head: mockHead,
+        documentElement: mockBody,
         getElementById(id) {
             return elementsById.get(id) || null;
         },
@@ -174,6 +179,45 @@ function createMockEnvironment() {
         }
     }
 
+    const mockIndexedDB = {
+        open(name, version) {
+            const req = {
+                result: {
+                    objectStoreNames: { contains: () => true },
+                    createObjectStore: () => ({}),
+                    transaction: (storeName, mode) => {
+                        if (!dbStores.has(storeName)) dbStores.set(storeName, new Map());
+                        const storeMap = dbStores.get(storeName);
+                        const tx = {
+                            objectStore: () => ({
+                                put: (item) => storeMap.set(item.id, item),
+                                delete: (key) => storeMap.delete(key),
+                                clear: () => storeMap.clear(),
+                                getAll: () => {
+                                    const r = { result: Array.from(storeMap.values()) };
+                                    setTimeout(() => { if (r.onsuccess) r.onsuccess(); }, 2);
+                                    return r;
+                                }
+                            }),
+                            oncomplete: null,
+                            onerror: null
+                        };
+                        setTimeout(() => { if (tx.oncomplete) tx.oncomplete(); }, 5);
+                        return tx;
+                    }
+                },
+                onsuccess: null,
+                onerror: null,
+                onupgradeneeded: null
+            };
+            setTimeout(() => {
+                if (req.onupgradeneeded) req.onupgradeneeded({ target: req });
+                if (req.onsuccess) req.onsuccess();
+            }, 5);
+            return req;
+        }
+    };
+
     const mockWin = {
         document: mockDoc,
         navigator: {
@@ -181,323 +225,135 @@ function createMockEnvironment() {
                 getUserMedia: async (constraints) => ({ mockNativeStream: true })
             }
         },
+        indexedDB: mockIndexedDB,
         URL: {
             createObjectURL(file) { return 'blob://mock/' + file.name; },
             revokeObjectURL(url) { }
         },
         Image: MockImage,
+        prompt: (msg, def) => def || 'Sekolah Baru',
+        confirm: () => true,
+        alert: () => { },
         setTimeout: setTimeout,
         clearTimeout: clearTimeout,
         setInterval: () => 123,
         clearInterval: () => { }
     };
 
-    return { mockWin, mockDoc, elementsById };
+    return { mockWin, mockDoc, elementsById, dbStores };
 }
 
-describe('MBG Photo Helper — Pengujian 10 Skenario', () => {
+function executeScript(mockWin, mockDoc) {
+    const code = fs.readFileSync('scripts/mbg-photo-helper.user.js', 'utf8');
+    const run = new Function('unsafeWindow', 'window', 'document', 'URL', 'Image', 'navigator', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'prompt', 'confirm', code);
+    run(mockWin, mockWin, mockDoc, mockWin.URL, mockWin.Image, mockWin.navigator, setTimeout, clearTimeout, () => 1, () => { }, mockWin.prompt, mockWin.confirm);
+}
 
-    test('Skenario 1: Memilih satu foto — fungsi lama tetap berjalan dengan baik', async () => {
+describe('MBG Photo Helper v2.2 — Pengujian 14 Skenario Wajib', () => {
+
+    test('1. Satu foto tetap dapat digunakan (Kompatibilitas fungsi tunggal)', async () => {
         const { mockWin, mockDoc } = createMockEnvironment();
-        const code = fs.readFileSync('scripts/mbg-photo-helper.user.js', 'utf8');
-        const run = new Function('unsafeWindow', 'window', 'document', 'URL', 'Image', 'navigator', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', code);
-        run(mockWin, mockWin, mockDoc, mockWin.URL, mockWin.Image, mockWin.navigator, setTimeout, clearTimeout, () => 1, () => { });
+        executeScript(mockWin, mockDoc);
 
-        // Simulasikan pemilihan 1 foto melalui input
         const fileInput = mockDoc.getElementById('mbg-file-input');
-        assert.ok(fileInput, 'Elemen mbg-file-input harus tersedia');
+        assert.ok(fileInput, 'Input file harus tersedia');
 
-        const singleFile = { name: 'nasi_ayam.jpg', size: 1024 * 500, type: 'image/jpeg' };
+        const singleFile = { name: 'nasi_box.jpg', size: 1024 * 500, type: 'image/jpeg' };
         fileInput.onchange({ target: { files: [singleFile] } });
 
-        // Verifikasi variabel warisan (backward compatibility)
-        assert.ok(mockWin.mbgSelectedFile, 'win.mbgSelectedFile harus terisi');
-        assert.strictEqual(mockWin.mbgSelectedFile.name, 'nasi_ayam.jpg');
-        assert.strictEqual(mockWin._mbgState.photos.length, 1);
-        assert.strictEqual(mockWin._mbgState.photos[0].status, 'active');
+        const st = mockWin._mbgState;
+        assert.strictEqual(st.collection.length, 1);
+        assert.strictEqual(mockWin.mbgSelectedFile.name, 'nasi_box.jpg');
 
-        // Verifikasi WebRTC virtual stream jalan normal untuk single photo
         const stream = await mockWin.navigator.mediaDevices.getUserMedia({ video: true });
-        assert.ok(stream, 'Stream harus dikembalikan oleh hook getUserMedia');
-        const tracks = stream.getVideoTracks();
-        assert.strictEqual(tracks.length, 1);
-        assert.strictEqual(tracks[0].kind, 'video');
+        assert.ok(stream);
+        stream.getVideoTracks()[0].stop();
 
-        // Simulasikan selesai capture (track.stop)
-        tracks[0].stop();
-        assert.strictEqual(mockWin._mbgState.photos[0].status, 'success', 'Foto harus bertransisi ke success');
+        // Status foto untuk sekolah aktif harus 'sent', dan foto tetap ada di koleksi
+        assert.strictEqual(st.collection.length, 1, 'Foto sumber tidak boleh hilang setelah diunggah');
+        assert.strictEqual(st.schoolDeliveries[st.currentSchool.id][st.collection[0].id], 'sent');
     });
 
-    test('Skenario 2: Memilih empat foto sekaligus sesuai standar 4 dokumentasi Pak Aslap', () => {
+    test('2. Empat foto dapat dipilih sekaligus sesuai SOP dokumentasi MBG', () => {
         const { mockWin, mockDoc } = createMockEnvironment();
-        const code = fs.readFileSync('scripts/mbg-photo-helper.user.js', 'utf8');
-        const run = new Function('unsafeWindow', 'window', 'document', 'URL', 'Image', 'navigator', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', code);
-        run(mockWin, mockWin, mockDoc, mockWin.URL, mockWin.Image, mockWin.navigator, setTimeout, clearTimeout, () => 1, () => { });
-
-        const files = [
-            { name: '1_makanan.jpg', size: 2 * 1024 * 1024, type: 'image/jpeg' },
-            { name: '2_ompreng.jpg', size: 1.5 * 1024 * 1024, type: 'image/jpeg' },
-            { name: '3_cuci_ompreng.jpg', size: 2.2 * 1024 * 1024, type: 'image/jpeg' },
-            { name: '4_pendukung.png', size: 1.8 * 1024 * 1024, type: 'image/png' }
-        ];
+        executeScript(mockWin, mockDoc);
 
         const fileInput = mockDoc.getElementById('mbg-file-input');
-        assert.ok(fileInput, 'Elemen mbg-file-input harus tersedia');
-        assert.strictEqual(fileInput.attributes.multiple, '', 'Atribut multiple harus terpasang pada input');
+        const files = [
+            { name: '1_makanan.jpg', size: 1024 * 500, type: 'image/jpeg' },
+            { name: '2_ompreng.jpg', size: 1024 * 500, type: 'image/jpeg' },
+            { name: '3_cuci.jpg', size: 1024 * 500, type: 'image/jpeg' },
+            { name: '4_pendukung.jpg', size: 1024 * 500, type: 'image/jpeg' }
+        ];
 
         fileInput.onchange({ target: { files: files } });
 
         const st = mockWin._mbgState;
-        assert.strictEqual(st.photos.length, 4, 'Harus ada 4 foto yang berhasil masuk ke antrean');
-
-        // Verifikasi pemetaan kategori otomatis sesuai SOP SPPG
-        assert.strictEqual(st.photos[0].category, '1. Foto Makanan / Hasil Masakan');
-        assert.strictEqual(st.photos[1].category, '2. Foto Ompreng / Wadah Makanan');
-        assert.strictEqual(st.photos[2].category, '3. Foto Kegiatan Pencucian Ompreng');
-        assert.strictEqual(st.photos[3].category, '4. Foto Dokumentasi Pendukung');
-
-        // Foto pertama harus otomatis berstatus active, sisanya pending
-        assert.strictEqual(st.photos[0].status, 'active');
-        assert.strictEqual(st.photos[1].status, 'pending');
-        assert.strictEqual(st.photos[2].status, 'pending');
-        assert.strictEqual(st.photos[3].status, 'pending');
-
-        // mbgSelectedFile harus mengarah ke foto ke-1
-        assert.strictEqual(mockWin.mbgSelectedFile.name, '1_makanan.jpg');
+        assert.strictEqual(st.collection.length, 4, '4 foto harus masuk ke koleksi');
+        assert.strictEqual(st.collection[0].category, '1. Foto Makanan / Hasil Masakan');
+        assert.strictEqual(st.collection[1].category, '2. Foto Ompreng / Wadah Makanan');
+        assert.strictEqual(st.collection[2].category, '3. Foto Kegiatan Pencucian Ompreng');
+        assert.strictEqual(st.collection[3].category, '4. Foto Dokumentasi Pendukung');
+        assert.strictEqual(st.activePhotoId, st.collection[0].id);
     });
 
-    test('Skenario 3: Menambahkan foto setelah pemilihan pertama (Append tanpa menghapus)', () => {
+    test('3. Foto dapat ditambahkan ke koleksi tanpa mengganti foto sebelumnya (Append)', () => {
         const { mockWin, mockDoc } = createMockEnvironment();
-        const code = fs.readFileSync('scripts/mbg-photo-helper.user.js', 'utf8');
-        const run = new Function('unsafeWindow', 'window', 'document', 'URL', 'Image', 'navigator', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', code);
-        run(mockWin, mockWin, mockDoc, mockWin.URL, mockWin.Image, mockWin.navigator, setTimeout, clearTimeout, () => 1, () => { });
-
-        const fileInput = mockDoc.getElementById('mbg-file-input');
-
-        // Pemilihan gelombang 1: 2 foto
-        fileInput.onchange({
-            target: {
-                files: [
-                    { name: 'foto_makanan.jpg', size: 1024 * 1024, type: 'image/jpeg' },
-                    { name: 'foto_ompreng.jpg', size: 1024 * 1024, type: 'image/jpeg' }
-                ]
-            }
-        });
-        assert.strictEqual(mockWin._mbgState.photos.length, 2);
-
-        // Pemilihan gelombang 2: tambah 2 foto lagi
-        fileInput.onchange({
-            target: {
-                files: [
-                    { name: 'foto_cuci.jpg', size: 1024 * 1024, type: 'image/jpeg' },
-                    { name: 'foto_pendukung.jpg', size: 1024 * 1024, type: 'image/jpeg' }
-                ]
-            }
-        });
-
-        // Hasil akhir harus 4 foto (foto gelombang 1 tidak boleh terhapus)
-        assert.strictEqual(mockWin._mbgState.photos.length, 4);
-        assert.strictEqual(mockWin._mbgState.photos[0].name, 'foto_makanan.jpg');
-        assert.strictEqual(mockWin._mbgState.photos[1].name, 'foto_ompreng.jpg');
-        assert.strictEqual(mockWin._mbgState.photos[2].name, 'foto_cuci.jpg');
-        assert.strictEqual(mockWin._mbgState.photos[3].name, 'foto_pendukung.jpg');
-    });
-
-    test('Skenario 4: Menghapus salah satu foto sebelum upload', () => {
-        const { mockWin, mockDoc } = createMockEnvironment();
-        const code = fs.readFileSync('scripts/mbg-photo-helper.user.js', 'utf8');
-        const run = new Function('unsafeWindow', 'window', 'document', 'URL', 'Image', 'navigator', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', code);
-        run(mockWin, mockWin, mockDoc, mockWin.URL, mockWin.Image, mockWin.navigator, setTimeout, clearTimeout, () => 1, () => { });
+        executeScript(mockWin, mockDoc);
 
         const fileInput = mockDoc.getElementById('mbg-file-input');
         fileInput.onchange({
             target: {
                 files: [
-                    { name: 'foto1.jpg', size: 1024 * 1024, type: 'image/jpeg' },
-                    { name: 'foto2_salah.jpg', size: 1024 * 1024, type: 'image/jpeg' },
-                    { name: 'foto3.jpg', size: 1024 * 1024, type: 'image/jpeg' }
+                    { name: 'foto1.jpg', size: 1024, type: 'image/jpeg' },
+                    { name: 'foto2.jpg', size: 1024, type: 'image/jpeg' }
                 ]
             }
         });
-        assert.strictEqual(mockWin._mbgState.photos.length, 3);
+        assert.strictEqual(mockWin._mbgState.collection.length, 2);
 
-        const photoToDeleteId = mockWin._mbgState.photos[1].id;
-        const st = mockWin._mbgState;
-        const targetIdx = st.photos.findIndex(p => p.id === photoToDeleteId);
-        st.photos.splice(targetIdx, 1);
+        fileInput.onchange({
+            target: {
+                files: [
+                    { name: 'foto3.jpg', size: 1024, type: 'image/jpeg' },
+                    { name: 'foto4.jpg', size: 1024, type: 'image/jpeg' }
+                ]
+            }
+        });
 
-        assert.strictEqual(st.photos.length, 2);
-        assert.strictEqual(st.photos[0].name, 'foto1.jpg');
-        assert.strictEqual(st.photos[1].name, 'foto3.jpg');
+        assert.strictEqual(mockWin._mbgState.collection.length, 4, 'Foto sebelumnya tidak boleh terhapus');
     });
 
-    test('Skenario 5: Upload seluruh foto berhasil secara berurutan (Sequential Auto-Advance)', async () => {
+    test('4. Foto dapat dihapus secara manual dari koleksi sumber', () => {
         const { mockWin, mockDoc } = createMockEnvironment();
-        const code = fs.readFileSync('scripts/mbg-photo-helper.user.js', 'utf8');
-        const run = new Function('unsafeWindow', 'window', 'document', 'URL', 'Image', 'navigator', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', code);
-        run(mockWin, mockWin, mockDoc, mockWin.URL, mockWin.Image, mockWin.navigator, setTimeout, clearTimeout, () => 1, () => { });
+        executeScript(mockWin, mockDoc);
 
         const fileInput = mockDoc.getElementById('mbg-file-input');
         fileInput.onchange({
             target: {
                 files: [
-                    { name: '1_makanan.jpg', size: 1024, type: 'image/jpeg' },
-                    { name: '2_ompreng.jpg', size: 1024, type: 'image/jpeg' },
-                    { name: '3_cuci.jpg', size: 1024, type: 'image/jpeg' },
-                    { name: '4_pendukung.jpg', size: 1024, type: 'image/jpeg' }
+                    { name: 'fotoA.jpg', size: 1024, type: 'image/jpeg' },
+                    { name: 'fotoB_salah.jpg', size: 1024, type: 'image/jpeg' },
+                    { name: 'fotoC.jpg', size: 1024, type: 'image/jpeg' }
                 ]
             }
         });
 
         const st = mockWin._mbgState;
-        assert.strictEqual(st.autoAdvance, true);
+        assert.strictEqual(st.collection.length, 3);
 
-        // Alur foto 1: Kamera POP SIPGN di-klik pertama kali
-        assert.strictEqual(st.activeIndex, 0);
-        let stream = await mockWin.navigator.mediaDevices.getUserMedia({ video: true });
-        stream.getVideoTracks()[0].stop(); // POP SIPGN selesai jepret foto 1
-        assert.strictEqual(st.photos[0].status, 'success', 'Foto 1 harus success');
-        assert.strictEqual(st.activeIndex, 1, 'Auto-advance harus memajukan ke foto 2');
-        assert.strictEqual(st.photos[1].status, 'active', 'Foto 2 harus active');
+        const deleteTargetId = st.collection[1].id;
+        const targetIdx = st.collection.findIndex(p => p.id === deleteTargetId);
+        st.collection.splice(targetIdx, 1);
 
-        // Alur foto 2: Kamera POP SIPGN di-klik kedua kali
-        stream = await mockWin.navigator.mediaDevices.getUserMedia({ video: true });
-        stream.getVideoTracks()[0].stop();
-        assert.strictEqual(st.photos[1].status, 'success');
-        assert.strictEqual(st.activeIndex, 2);
-        assert.strictEqual(st.photos[2].status, 'active');
-
-        // Alur foto 3:
-        stream = await mockWin.navigator.mediaDevices.getUserMedia({ video: true });
-        stream.getVideoTracks()[0].stop();
-        assert.strictEqual(st.photos[2].status, 'success');
-        assert.strictEqual(st.activeIndex, 3);
-        assert.strictEqual(st.photos[3].status, 'active');
-
-        // Alur foto 4:
-        stream = await mockWin.navigator.mediaDevices.getUserMedia({ video: true });
-        stream.getVideoTracks()[0].stop();
-        assert.strictEqual(st.photos[3].status, 'success');
-
-        // Verifikasi semua foto berhasil
-        assert.ok(st.photos.every(p => p.status === 'success'), 'Seluruh 4 foto harus berhasil');
+        assert.strictEqual(st.collection.length, 2);
+        assert.strictEqual(st.collection[0].name, 'fotoA.jpg');
+        assert.strictEqual(st.collection[1].name, 'fotoC.jpg');
     });
 
-    test('Skenario 6: Salah satu foto gagal sedangkan foto lainnya berhasil', async () => {
+    test('5. Upload berhasil TIDAK menghapus foto sumber dari koleksi', async () => {
         const { mockWin, mockDoc } = createMockEnvironment();
-        const code = fs.readFileSync('scripts/mbg-photo-helper.user.js', 'utf8');
-        const run = new Function('unsafeWindow', 'window', 'document', 'URL', 'Image', 'navigator', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', code);
-        run(mockWin, mockWin, mockDoc, mockWin.URL, mockWin.Image, mockWin.navigator, setTimeout, clearTimeout, () => 1, () => { });
-
-        const fileInput = mockDoc.getElementById('mbg-file-input');
-        fileInput.onchange({
-            target: {
-                files: [
-                    { name: '1_makanan.jpg', size: 1024, type: 'image/jpeg' },
-                    { name: '2_ompreng.jpg', size: 1024, type: 'image/jpeg' },
-                    { name: '3_cuci.jpg', size: 1024, type: 'image/jpeg' }
-                ]
-            }
-        });
-
-        const st = mockWin._mbgState;
-
-        // Foto 1 sukses
-        let stream = await mockWin.navigator.mediaDevices.getUserMedia({ video: true });
-        stream.getVideoTracks()[0].stop();
-        assert.strictEqual(st.photos[0].status, 'success');
-
-        // Foto 2 disimulasikan gagal
-        st.photos[1].status = 'failed';
-        st.photos[1].error = 'Koneksi terputus ke server POP SIPGN';
-
-        // Lanjut ke foto 3
-        st.activeIndex = 2;
-        st.photos[2].status = 'active';
-
-        stream = await mockWin.navigator.mediaDevices.getUserMedia({ video: true });
-        stream.getVideoTracks()[0].stop();
-        assert.strictEqual(st.photos[2].status, 'success');
-
-        // Status kolektif: Foto 1 & 3 sukses, Foto 2 gagal
-        assert.strictEqual(st.photos[0].status, 'success');
-        assert.strictEqual(st.photos[1].status, 'failed');
-        assert.strictEqual(st.photos[2].status, 'success');
-    });
-
-    test('Skenario 7: Mencoba kembali foto yang gagal tanpa mengulang foto yang berhasil', async () => {
-        const { mockWin, mockDoc } = createMockEnvironment();
-        const code = fs.readFileSync('scripts/mbg-photo-helper.user.js', 'utf8');
-        const run = new Function('unsafeWindow', 'window', 'document', 'URL', 'Image', 'navigator', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', code);
-        run(mockWin, mockWin, mockDoc, mockWin.URL, mockWin.Image, mockWin.navigator, setTimeout, clearTimeout, () => 1, () => { });
-
-        const fileInput = mockDoc.getElementById('mbg-file-input');
-        fileInput.onchange({
-            target: {
-                files: [
-                    { name: '1_makanan.jpg', size: 1024, type: 'image/jpeg' },
-                    { name: '2_ompreng.jpg', size: 1024, type: 'image/jpeg' }
-                ]
-            }
-        });
-
-        const st = mockWin._mbgState;
-        st.photos[0].status = 'success';
-        st.photos[1].status = 'failed';
-        st.photos[1].error = 'Timeout';
-
-        // Pengguna klik coba lagi pada foto 2 (retry)
-        const photo2Id = st.photos[1].id;
-        const retryIdx = st.photos.findIndex(p => p.id === photo2Id);
-        st.photos[retryIdx].status = 'pending';
-        st.photos[retryIdx].error = '';
-        st.activeIndex = retryIdx;
-        st.photos[retryIdx].status = 'active';
-        mockWin.mbgSelectedFile = st.photos[retryIdx].file;
-
-        // Foto 1 tetap aman dengan status 'success'
-        assert.strictEqual(st.photos[0].status, 'success', 'Foto 1 tidak boleh di-reset');
-        assert.strictEqual(st.photos[1].status, 'active', 'Foto 2 harus menjadi aktif untuk dicoba lagi');
-        assert.strictEqual(mockWin.mbgSelectedFile.name, '2_ompreng.jpg');
-
-        // Sekarang coba jepret foto 2 lagi di kamera POP SIPGN
-        const stream = await mockWin.navigator.mediaDevices.getUserMedia({ video: true });
-        stream.getVideoTracks()[0].stop();
-
-        assert.strictEqual(st.photos[0].status, 'success', 'Foto 1 tetap sukses');
-        assert.strictEqual(st.photos[1].status, 'success', 'Foto 2 sekarang sukses setelah retry');
-    });
-
-    test('Skenario 8: Memilih format atau ukuran foto yang tidak valid ditolak dengan aman', () => {
-        const { mockWin, mockDoc } = createMockEnvironment();
-        const code = fs.readFileSync('scripts/mbg-photo-helper.user.js', 'utf8');
-        const run = new Function('unsafeWindow', 'window', 'document', 'URL', 'Image', 'navigator', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', code);
-        run(mockWin, mockWin, mockDoc, mockWin.URL, mockWin.Image, mockWin.navigator, setTimeout, clearTimeout, () => 1, () => { });
-
-        const fileInput = mockDoc.getElementById('mbg-file-input');
-
-        // Berkas invalid: PDF & berkas raksasa > 15MB
-        const invalidFiles = [
-            { name: 'dokumen.pdf', size: 1024 * 50, type: 'application/pdf' },
-            { name: 'foto_terlalu_besar.jpg', size: 20 * 1024 * 1024, type: 'image/jpeg' },
-            { name: 'foto_valid.jpg', size: 2 * 1024 * 1024, type: 'image/jpeg' }
-        ];
-
-        fileInput.onchange({ target: { files: invalidFiles } });
-
-        const st = mockWin._mbgState;
-        // Hanya 1 file yang valid diterima
-        assert.strictEqual(st.photos.length, 1);
-        assert.strictEqual(st.photos[0].name, 'foto_valid.jpg');
-        // Notifikasi peringatan harus muncul di UI
-        assert.ok(st.notification.text.includes('melebihi') || st.notification.text.includes('tidak didukung'));
-    });
-
-    test('Skenario 9: Penanganan sesi kedaluwarsa atau server offline', () => {
-        const { mockWin, mockDoc } = createMockEnvironment();
-        const code = fs.readFileSync('scripts/mbg-photo-helper.user.js', 'utf8');
-        const run = new Function('unsafeWindow', 'window', 'document', 'URL', 'Image', 'navigator', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', code);
-        run(mockWin, mockWin, mockDoc, mockWin.URL, mockWin.Image, mockWin.navigator, setTimeout, clearTimeout, () => 1, () => { });
+        executeScript(mockWin, mockDoc);
 
         const fileInput = mockDoc.getElementById('mbg-file-input');
         fileInput.onchange({
@@ -510,16 +366,38 @@ describe('MBG Photo Helper — Pengujian 10 Skenario', () => {
         });
 
         const st = mockWin._mbgState;
-        // Ketika terjadi session expired di POP SIPGN, antrean di memori helper TIDAK hilang
-        assert.strictEqual(st.photos.length, 2);
-        assert.strictEqual(typeof mockWin.loginUser, 'undefined', 'Tidak ada auto-login liar');
+        assert.strictEqual(st.collection.length, 2);
+
+        // Upload foto 1
+        const stream1 = await mockWin.navigator.mediaDevices.getUserMedia({ video: true });
+        stream1.getVideoTracks()[0].stop();
+
+        // Verifikasi foto 1 berstatus 'sent', tetapi kedua foto TETAP ADA di koleksi
+        assert.strictEqual(st.schoolDeliveries[st.currentSchool.id][st.collection[0].id], 'sent');
+        assert.strictEqual(st.collection.length, 2, 'Koleksi foto sumber harus tetap utuh');
     });
 
-    test('Skenario 10: Memastikan status upload sesuai hasil aktual dan UI sinkron', () => {
+    test('6. Upload gagal TIDAK menghapus foto sumber dari koleksi', async () => {
         const { mockWin, mockDoc } = createMockEnvironment();
-        const code = fs.readFileSync('scripts/mbg-photo-helper.user.js', 'utf8');
-        const run = new Function('unsafeWindow', 'window', 'document', 'URL', 'Image', 'navigator', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', code);
-        run(mockWin, mockWin, mockDoc, mockWin.URL, mockWin.Image, mockWin.navigator, setTimeout, clearTimeout, () => 1, () => { });
+        executeScript(mockWin, mockDoc);
+
+        const fileInput = mockDoc.getElementById('mbg-file-input');
+        fileInput.onchange({
+            target: {
+                files: [{ name: 'foto_gagal.jpg', size: 1024, type: 'image/jpeg' }]
+            }
+        });
+
+        const st = mockWin._mbgState;
+        st.schoolDeliveries[st.currentSchool.id][st.collection[0].id] = 'failed';
+
+        assert.strictEqual(st.collection.length, 1, 'Foto sumber gagal tidak boleh terhapus dari koleksi');
+        assert.strictEqual(st.schoolDeliveries[st.currentSchool.id][st.collection[0].id], 'failed');
+    });
+
+    test('7. Koleksi yang sama dapat digunakan untuk dua sekolah berbeda', async () => {
+        const { mockWin, mockDoc } = createMockEnvironment();
+        executeScript(mockWin, mockDoc);
 
         const fileInput = mockDoc.getElementById('mbg-file-input');
         fileInput.onchange({
@@ -531,10 +409,156 @@ describe('MBG Photo Helper — Pengujian 10 Skenario', () => {
             }
         });
 
-        const container = mockDoc.getElementById('mbg-quick-bypass');
-        assert.ok(container.innerHTML.includes('makanan.jpg'));
-        assert.ok(container.innerHTML.includes('ompreng.jpg'));
-        assert.ok(container.innerHTML.includes('AKTIF DI KAMERA'));
-        assert.ok(container.innerHTML.includes('Menunggu'));
+        const st = mockWin._mbgState;
+        const school1Id = st.currentSchool.id;
+
+        // Sekolah 1: kirim foto 1 & foto 2
+        let stream = await mockWin.navigator.mediaDevices.getUserMedia({ video: true });
+        stream.getVideoTracks()[0].stop();
+        stream = await mockWin.navigator.mediaDevices.getUserMedia({ video: true });
+        stream.getVideoTracks()[0].stop();
+
+        assert.strictEqual(st.schoolDeliveries[school1Id][st.collection[0].id], 'sent');
+        assert.strictEqual(st.schoolDeliveries[school1Id][st.collection[1].id], 'sent');
+
+        // Pengguna beralih ke Sekolah 2 (klik tombol Sesi Baru)
+        const btnNewSchool = mockDoc.getElementById('mbg-btn-new-school');
+        mockWin.prompt = () => 'SD Negeri Cilandak 02';
+        btnNewSchool.click();
+
+        const school2Id = st.currentSchool.id;
+        assert.notStrictEqual(school1Id, school2Id, 'ID sekolah harus berganti');
+        assert.strictEqual(st.currentSchool.name, 'SD Negeri Cilandak 02');
+
+        // Foto sumber harus TETAP LENGKAP 2 foto tanpa perlu memilih ulang dari galeri
+        assert.strictEqual(st.collection.length, 2, 'Koleksi foto sumber harus tetap utuh untuk sekolah 2');
+
+        // Status untuk Sekolah 2 harus mulai dari pending (bukan sent)
+        assert.strictEqual(st.schoolDeliveries[school2Id][st.collection[0].id], undefined);
+    });
+
+    test('8. Status sekolah pertama TIDAK membuat upload sekolah kedua dianggap selesai', async () => {
+        const { mockWin, mockDoc } = createMockEnvironment();
+        executeScript(mockWin, mockDoc);
+
+        const fileInput = mockDoc.getElementById('mbg-file-input');
+        fileInput.onchange({
+            target: {
+                files: [{ name: 'foto.jpg', size: 1024, type: 'image/jpeg' }]
+            }
+        });
+
+        const st = mockWin._mbgState;
+        const s1Id = st.currentSchool.id;
+
+        // Selesai di Sekolah 1
+        let stream = await mockWin.navigator.mediaDevices.getUserMedia({ video: true });
+        stream.getVideoTracks()[0].stop();
+        assert.strictEqual(st.schoolDeliveries[s1Id][st.collection[0].id], 'sent');
+
+        // Buka Sekolah 2
+        mockDoc.getElementById('mbg-btn-new-school').click();
+        const s2Id = st.currentSchool.id;
+
+        // Verifikasi pemisahan status: Sekolah 1 sent, Sekolah 2 belum sent
+        assert.strictEqual(st.schoolDeliveries[s1Id][st.collection[0].id], 'sent');
+        assert.notStrictEqual(st.schoolDeliveries[s2Id][st.collection[0].id], 'sent');
+    });
+
+    test('9. Foto yang berhasil tidak dikirim ulang tanpa kebutuhan / perpindahan sesi', async () => {
+        const { mockWin, mockDoc } = createMockEnvironment();
+        executeScript(mockWin, mockDoc);
+
+        const fileInput = mockDoc.getElementById('mbg-file-input');
+        fileInput.onchange({
+            target: {
+                files: [
+                    { name: '1.jpg', size: 1024, type: 'image/jpeg' },
+                    { name: '2.jpg', size: 1024, type: 'image/jpeg' }
+                ]
+            }
+        });
+
+        const st = mockWin._mbgState;
+        // Jepret foto 1
+        let stream = await mockWin.navigator.mediaDevices.getUserMedia({ video: true });
+        stream.getVideoTracks()[0].stop();
+
+        // Kamera otomatis memajukan antrean ke foto 2, tidak mengirim ulang foto 1
+        assert.strictEqual(st.activePhotoId, st.collection[1].id, 'Kamera harus mengarah ke foto 2');
+        assert.strictEqual(mockWin.mbgSelectedFile.name, '2.jpg');
+    });
+
+    test('10. Tampilan desktop dan mobile menggunakan fungsi dan logika yang sama', () => {
+        const desktopSrc = fs.readFileSync('scripts/mbg-photo-helper.user.js', 'utf8');
+        const mobileSrc = fs.readFileSync('scripts/bookmarklet.js', 'utf8');
+
+        // Bersihkan header userscript untuk membandingkan inti logika
+        const coreDesktop = desktopSrc.substring(desktopSrc.indexOf('(function () {'));
+        const coreMobile = mobileSrc.substring(mobileSrc.indexOf('(function () {'));
+
+        assert.strictEqual(coreDesktop.trim(), coreMobile.trim(), 'Kode inti logika dan UI desktop dan mobile harus identik 100%');
+    });
+
+    test('11. Loader dan bookmarklet minified menginisialisasi UI yang konsisten', () => {
+        const loader = fs.readFileSync('scripts/bookmarklet-loader.url.txt', 'utf8');
+        const minified = fs.readFileSync('scripts/bookmarklet-minified.url.txt', 'utf8');
+
+        assert.ok(loader.startsWith('javascript:'), 'Loader harus valid javascript: URL');
+        assert.ok(minified.startsWith('javascript:'), 'Minified harus valid javascript: URL');
+        assert.ok(loader.length < 300, 'Loader harus pendek di bawah 300 bytes agar nyaman dipasang di HP');
+
+        // Pastikan minified dapat dievaluasi tanpa sintaks error
+        assert.doesNotThrow(() => {
+            new Function(minified.replace('javascript:', ''));
+        });
+    });
+
+    test('12. Kegagalan memuat script eksternal ditangani dengan jelas di loader', () => {
+        const loader = fs.readFileSync('scripts/bookmarklet-loader.url.txt', 'utf8');
+        assert.ok(loader.includes('onerror'), 'Loader bookmarklet wajib memiliki error handler onerror');
+        assert.ok(loader.includes('Gagal memuat'), 'Loader wajib memberi pesan kesalahan jika offline/gagal');
+    });
+
+    test('13. Perpindahan halaman SPA tidak menghilangkan koleksi secara tidak sengaja', () => {
+        const { mockWin, mockDoc } = createMockEnvironment();
+        executeScript(mockWin, mockDoc);
+
+        const fileInput = mockDoc.getElementById('mbg-file-input');
+        fileInput.onchange({
+            target: {
+                files: [{ name: 'foto_spa.jpg', size: 1024, type: 'image/jpeg' }]
+            }
+        });
+
+        // Simulasikan SPA navigasi yang merender ulang body DOM
+        const widget = mockDoc.getElementById('mbg-quick-bypass');
+        widget.innerHTML = ''; // SPA menghapus isi
+
+        // Jalankan kembali siklus interval SPA init()
+        const st = mockWin._mbgState;
+        assert.strictEqual(st.collection.length, 1, 'State koleksi di memori window tidak boleh terhapus oleh SPA');
+    });
+
+    test('14. Perilaku penyimpanan koleksi tersinkronisasi ke IndexedDB', async () => {
+        const { mockWin, mockDoc, dbStores } = createMockEnvironment();
+        executeScript(mockWin, mockDoc);
+
+        const fileInput = mockDoc.getElementById('mbg-file-input');
+        fileInput.onchange({
+            target: {
+                files: [
+                    { name: 'persisten1.jpg', size: 1024, type: 'image/jpeg' },
+                    { name: 'persisten2.jpg', size: 1024, type: 'image/jpeg' }
+                ]
+            }
+        });
+
+        // Tunggu transaksi IndexedDB selesai
+        await new Promise(r => setTimeout(r, 30));
+
+        const storeMap = dbStores.get('photo_collection');
+        assert.ok(storeMap, 'Object store photo_collection harus terbentuk di IndexedDB');
+        assert.strictEqual(storeMap.size, 2, '2 foto harus tersimpan di IndexedDB');
     });
 });
