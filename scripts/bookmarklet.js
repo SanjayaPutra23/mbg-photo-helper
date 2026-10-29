@@ -1,31 +1,29 @@
 /**
  * MBG Local Photo Helper - Unified Core Engine (Desktop & Mobile)
- * Versi 2.2.1 (Multi-Foto, Multi-Sekolah, Auto-Inject Input & WebRTC Mocking)
+ * Versi 2.2.2 (Multi-Foto Anti-Duplikasi, Auto-Advance WebRTC Canvas Hook & Input Debounce)
  * Berjalan identik pada Laptop/PC (Tampermonkey) dan Smartphone (Bookmarklet / Kiwi).
  */
 (function () {
     'use strict';
     const win = typeof unsafeWindow !== 'undefined' ? unsafeWindow : window;
+    const doc = document;
 
-    // Kategori standar rekomendasi SPPG MBG
     const DEFAULT_CATEGORIES = [
         '1. Foto Makanan / Hasil Masakan',
         '2. Foto Ompreng / Wadah Makanan',
         '3. Foto Kegiatan Pencucian Ompreng',
         '4. Foto Dokumentasi Pendukung'
     ];
+    const MAX_FILE_SIZE = 15 * 1024 * 1024;
+    const VALID_EXTS = ['.jpg', '.jpeg', '.png', '.webp'];
 
-    const MAX_FILE_SIZE_BYTES = 15 * 1024 * 1024; // 15 MB
-    const VALID_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.webp'];
-
-    // Inisialisasi state global tunggal
     if (!win._mbgState) {
         win._mbgState = {
-            collection: [], // Koleksi Foto Sumber: Array of { id, file, name, size, url, category, addedAt }
-            activePhotoId: null, // ID foto yang saat ini aktif di kamera virtual
-            replaceTargetId: null, // ID foto yang sedang ditargetkan untuk diganti
-            currentSchool: { id: 'sch_default', name: 'Sekolah #1' }, // Konteks sekolah aktif
-            schoolDeliveries: { sch_default: {} }, // Status pengiriman per sekolah: { [schoolId]: { [photoId]: 'pending'|'sent'|'failed' } }
+            collection: [],
+            activePhotoId: null,
+            replaceTargetId: null,
+            currentSchool: { id: 'sch_default', name: 'Sekolah #1' },
+            schoolDeliveries: { sch_default: {} },
             autoAdvance: true,
             minimized: false,
             notification: { text: '', type: 'info', timer: null },
@@ -38,176 +36,89 @@
         state.schoolDeliveries[state.currentSchool.id] = {};
     }
 
-    /* ==========================================================================
-       1. PENYIMPANAN PERSISTEN BERKAS FOTO DENGAN INDEXEDDB
-       Menyimpan objek File/Blob secara biner tanpa batasan string localStorage
-       ========================================================================== */
+    // 1. IndexedDB Helper Ringkas
     const DB_NAME = 'MBG_PhotoHelper_DB';
-    const DB_VERSION = 1;
     const STORE_NAME = 'photo_collection';
-
-    function openIndexedDB() {
-        return new Promise((resolve, reject) => {
-            if (!win.indexedDB) return reject(new Error('IndexedDB tidak didukung pada browser ini'));
-            const req = win.indexedDB.open(DB_NAME, DB_VERSION);
+    function withDB(mode, fn) {
+        return new Promise((resolve) => {
+            if (!win.indexedDB) return resolve(null);
+            const req = win.indexedDB.open(DB_NAME, 1);
             req.onupgradeneeded = (e) => {
                 const db = e.target.result;
-                if (!db.objectStoreNames.contains(STORE_NAME)) {
-                    db.createObjectStore(STORE_NAME, { keyPath: 'id' });
-                }
+                if (!db.objectStoreNames.contains(STORE_NAME)) db.createObjectStore(STORE_NAME, { keyPath: 'id' });
             };
-            req.onsuccess = () => resolve(req.result);
-            req.onerror = () => reject(req.error || new Error('Gagal membuka IndexedDB'));
+            req.onsuccess = () => {
+                try {
+                    const tx = req.result.transaction(STORE_NAME, mode);
+                    const store = tx.objectStore(STORE_NAME);
+                    const res = fn(store);
+                    tx.oncomplete = () => resolve(res && 'result' in res ? res.result : true);
+                    tx.onerror = () => resolve(null);
+                } catch (e) { resolve(null); }
+            };
+            req.onerror = () => resolve(null);
         });
     }
 
-    async function dbSavePhoto(item) {
-        try {
-            const db = await openIndexedDB();
-            const tx = db.transaction(STORE_NAME, 'readwrite');
-            tx.objectStore(STORE_NAME).put({
-                id: item.id,
-                file: item.file,
-                name: item.name,
-                size: item.size,
-                category: item.category,
-                addedAt: item.addedAt || Date.now()
-            });
-            return new Promise((resolve) => {
-                tx.oncomplete = () => resolve(true);
-                tx.onerror = () => resolve(false);
-            });
-        } catch (e) {
-            return false;
-        }
-    }
+    const dbSavePhoto = (item) => withDB('readwrite', s => s.put({ id: item.id, file: item.file, name: item.name, size: item.size, category: item.category, addedAt: item.addedAt || Date.now() }));
+    const dbDeletePhoto = (id) => withDB('readwrite', s => s.delete(id));
+    const dbClearPhotos = () => withDB('readwrite', s => s.clear());
+    const dbLoadAllPhotos = () => withDB('readonly', s => s.getAll()).then(r => r || []);
 
-    async function dbDeletePhoto(id) {
-        try {
-            const db = await openIndexedDB();
-            const tx = db.transaction(STORE_NAME, 'readwrite');
-            tx.objectStore(STORE_NAME).delete(id);
-            return new Promise((resolve) => {
-                tx.oncomplete = () => resolve(true);
-                tx.onerror = () => resolve(false);
-            });
-        } catch (e) {
-            return false;
-        }
-    }
-
-    async function dbClearPhotos() {
-        try {
-            const db = await openIndexedDB();
-            const tx = db.transaction(STORE_NAME, 'readwrite');
-            tx.objectStore(STORE_NAME).clear();
-            return new Promise((resolve) => {
-                tx.oncomplete = () => resolve(true);
-                tx.onerror = () => resolve(false);
-            });
-        } catch (e) {
-            return false;
-        }
-    }
-
-    async function dbLoadAllPhotos() {
-        try {
-            const db = await openIndexedDB();
-            const tx = db.transaction(STORE_NAME, 'readonly');
-            const req = tx.objectStore(STORE_NAME).getAll();
-            return new Promise((resolve) => {
-                req.onsuccess = () => resolve(req.result || []);
-                req.onerror = () => resolve([]);
-            });
-        } catch (e) {
-            return [];
-        }
-    }
-
-    // Pulihkan koleksi foto dari IndexedDB saat inisialisasi
     async function restoreCollectionFromStorage() {
         if (state.storageReady || state.collection.length > 0) return;
         state.storageReady = true;
-
         try {
-            const storedItems = await dbLoadAllPhotos();
-            if (storedItems && storedItems.length > 0 && state.collection.length === 0) {
-                storedItems.sort((a, b) => (a.addedAt || 0) - (b.addedAt || 0));
-                storedItems.forEach(item => {
-                    if (item.file && !state.collection.some(p => p.id === item.id)) {
+            const items = await dbLoadAllPhotos();
+            if (items && items.length > 0 && state.collection.length === 0) {
+                items.sort((a, b) => (a.addedAt || 0) - (b.addedAt || 0));
+                items.forEach(it => {
+                    if (it.file && !state.collection.some(p => p.id === it.id)) {
                         state.collection.push({
-                            id: item.id,
-                            file: item.file,
-                            name: item.name,
-                            size: item.size,
-                            url: URL.createObjectURL(item.file),
-                            category: item.category,
-                            addedAt: item.addedAt
+                            id: it.id, file: it.file, name: it.name, size: it.size,
+                            url: URL.createObjectURL(it.file), category: it.category, addedAt: it.addedAt
                         });
                     }
                 });
-
-                if (!state.activePhotoId && state.collection.length > 0) {
-                    state.activePhotoId = state.collection[0].id;
-                }
+                if (!state.activePhotoId && state.collection.length > 0) state.activePhotoId = state.collection[0].id;
                 syncLegacy();
-                showNotification(`${storedItems.length} foto dipulihkan dari penyimpanan lokal. Siap digunakan!`, 'info', 3000);
+                showNotification(`${items.length} foto dipulihkan dari penyimpanan lokal. Siap digunakan!`, 'info', 3000);
                 renderWidget();
             }
         } catch (e) { }
     }
 
-    /* ==========================================================================
-       2. MANAJEMEN KONTEKS SEKOLAH & STATUS PENGIRIMAN TERPISAH
-       ========================================================================== */
-    function getActiveSchoolId() {
-        return (state.currentSchool && state.currentSchool.id) || 'sch_default';
+    // 2. Sekolah & Status Pengiriman
+    const getActiveSchoolId = () => (state.currentSchool && state.currentSchool.id) || 'sch_default';
+    function getPhotoDeliveryStatus(photoId, sId) {
+        const id = sId || getActiveSchoolId();
+        if (!state.schoolDeliveries[id]) state.schoolDeliveries[id] = {};
+        return state.schoolDeliveries[id][photoId] || 'pending';
+    }
+    function setPhotoDeliveryStatus(photoId, status, sId) {
+        const id = sId || getActiveSchoolId();
+        if (!state.schoolDeliveries[id]) state.schoolDeliveries[id] = {};
+        state.schoolDeliveries[id][photoId] = status;
     }
 
-    function getPhotoDeliveryStatus(photoId, schoolId = null) {
-        const sId = schoolId || getActiveSchoolId();
-        if (!state.schoolDeliveries[sId]) {
-            state.schoolDeliveries[sId] = {};
-        }
-        return state.schoolDeliveries[sId][photoId] || 'pending';
-    }
-
-    function setPhotoDeliveryStatus(photoId, status, schoolId = null) {
-        const sId = schoolId || getActiveSchoolId();
-        if (!state.schoolDeliveries[sId]) {
-            state.schoolDeliveries[sId] = {};
-        }
-        state.schoolDeliveries[sId][photoId] = status;
-    }
-
-    // Memulai sesi baru untuk sekolah berikutnya dengan koleksi foto yang sama
     function startNewSchoolSession(customName = '') {
-        const schoolCount = Object.keys(state.schoolDeliveries).length + 1;
-        const name = customName || `Sekolah #${schoolCount}`;
-        const newId = 'sch_' + Date.now() + '_' + schoolCount;
-
-        state.currentSchool = { id: newId, name: name };
+        const count = Object.keys(state.schoolDeliveries).length + 1;
+        const name = customName || `Sekolah #${count}`;
+        const newId = 'sch_' + Date.now() + '_' + count;
+        state.currentSchool = { id: newId, name };
         state.schoolDeliveries[newId] = {};
-
-        // Atur foto pertama sebagai aktif di kamera untuk sekolah baru
-        if (state.collection.length > 0) {
-            state.activePhotoId = state.collection[0].id;
-        } else {
-            state.activePhotoId = null;
-        }
-
+        state.activePhotoId = state.collection.length > 0 ? state.collection[0].id : null;
         syncLegacy();
         showNotification(`Sesi baru dimulai untuk [${name}]. Koleksi foto Anda tetap utuh dan siap digunakan.`, 'success', 4000);
         renderWidget();
     }
 
-    // Deteksi konteks sekolah dari DOM POP SIPGN jika tersedia
     function detectSchoolContext() {
         try {
-            const candidateElements = document.querySelectorAll('h1, h2, h3, h4, .school-name, .text-primary, [data-school]');
-            for (let el of candidateElements) {
+            const els = doc.querySelectorAll('h1, h2, h3, h4, .school-name, .text-primary, [data-school]');
+            for (let el of els) {
                 const txt = el.innerText ? el.innerText.trim() : '';
-                if (txt && (txt.includes('SD') || txt.includes('SMP') || txt.includes('SMA') || txt.includes('SPPG') || txt.includes('Sekolah'))) {
+                if (txt && /SD|SMP|SMA|SPPG|Sekolah/.test(txt)) {
                     if (state.currentSchool.name !== txt && !state.currentSchool.name.startsWith(txt)) {
                         state.currentSchool.name = txt;
                         renderWidget();
@@ -218,39 +129,26 @@
         } catch (e) { }
     }
 
-    /* ==========================================================================
-       3. PENGELOLAAN KOLEKSI FOTO SUMBER (ADD, REPLACE, REMOVE, ADVANCE)
-       ========================================================================== */
+    // 3. Validasi & Pengelolaan Foto
     function validatePhoto(file) {
         if (!file) return { valid: false, error: 'Berkas tidak ditemukan.' };
-        const nameLower = file.name ? file.name.toLowerCase() : '';
-        const hasValidExt = VALID_EXTENSIONS.some(ext => nameLower.endsWith(ext));
-        const isImageMime = file.type ? file.type.startsWith('image/') : false;
-
-        if (!hasValidExt && !isImageMime) {
-            return { valid: false, error: `Format "${file.name}" tidak didukung. Harap pilih berkas JPG, PNG, atau WEBP.` };
-        }
-        if (file.size > MAX_FILE_SIZE_BYTES) {
-            const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
-            return { valid: false, error: `Ukuran "${file.name}" (${sizeMB} MB) melebihi batas 15 MB.` };
-        }
+        const name = (file.name || '').toLowerCase();
+        const validExt = VALID_EXTS.some(x => name.endsWith(x));
+        const isImg = file.type ? file.type.startsWith('image/') : false;
+        if (!validExt && !isImg) return { valid: false, error: `Format "${file.name}" tidak didukung. Harap pilih berkas JPG, PNG, atau WEBP.` };
+        if (file.size > MAX_FILE_SIZE) return { valid: false, error: `Ukuran "${file.name}" (${(file.size / 1048576).toFixed(1)} MB) melebihi batas 15 MB.` };
         return { valid: true };
     }
 
-    function formatSize(bytes) {
-        if (!bytes || bytes === 0) return '0 B';
-        if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + ' KB';
-        return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    function formatSize(b) {
+        if (!b) return '0 B';
+        return b < 1048576 ? (b / 1024).toFixed(0) + ' KB' : (b / 1048576).toFixed(1) + ' MB';
     }
 
     function showNotification(text, type = 'info', timeoutMs = 4000) {
-        if (state.notification.timer) {
-            clearTimeout(state.notification.timer);
-            state.notification.timer = null;
-        }
+        if (state.notification.timer) clearTimeout(state.notification.timer);
         state.notification.text = text;
         state.notification.type = type;
-
         if (timeoutMs > 0) {
             state.notification.timer = setTimeout(() => {
                 state.notification.text = '';
@@ -261,30 +159,21 @@
         renderWidget();
     }
 
-    function getActivePhoto() {
-        return state.collection.find(p => p.id === state.activePhotoId) || state.collection[0] || null;
-    }
-
+    const getActivePhoto = () => state.collection.find(p => p.id === state.activePhotoId) || state.collection[0] || null;
     function syncLegacy() {
-        const activePhoto = getActivePhoto();
-        win.mbgSelectedFile = (activePhoto && activePhoto.file) ? activePhoto.file : null;
+        const a = getActivePhoto();
+        win.mbgSelectedFile = (a && a.file) ? a.file : null;
         win.mbgPhotoList = state.collection;
     }
 
     function addPhotos(fileList) {
-        if (!fileList || fileList.length === 0) return;
-
-        // Mode Ganti Foto Spesifik (Replace Single Photo)
+        if (!fileList || !fileList.length) return;
         if (state.replaceTargetId) {
-            const targetId = state.replaceTargetId;
+            const target = state.collection.find(p => p.id === state.replaceTargetId);
             state.replaceTargetId = null;
-            const target = state.collection.find(p => p.id === targetId);
             if (target && fileList[0]) {
                 const val = validatePhoto(fileList[0]);
-                if (!val.valid) {
-                    showNotification(val.error, 'warn', 4000);
-                    return;
-                }
+                if (!val.valid) return showNotification(val.error, 'warn', 4000);
                 try { URL.revokeObjectURL(target.url); } catch (e) { }
                 target.file = fileList[0];
                 target.name = fileList[0].name;
@@ -300,82 +189,48 @@
             }
         }
 
-        // Mode Tambah Foto Baru ke Koleksi
-        let addedCount = 0;
-        let rejectedErrors = [];
-
+        let added = 0;
+        let lastErr = null;
         for (let i = 0; i < fileList.length; i++) {
-            const file = fileList[i];
-            const val = validatePhoto(file);
-            if (!val.valid) {
-                rejectedErrors.push(val.error);
-                continue;
-            }
-
-            const currentCount = state.collection.length;
-            const categoryLabel = currentCount < DEFAULT_CATEGORIES.length
-                ? DEFAULT_CATEGORIES[currentCount]
-                : `Dokumentasi Tambahan #${currentCount + 1}`;
-
-            const newPhoto = {
+            const f = fileList[i];
+            const v = validatePhoto(f);
+            if (!v.valid) { lastErr = v.error; continue; }
+            const len = state.collection.length;
+            const item = {
                 id: 'mbg_' + Date.now() + '_' + Math.random().toString(36).substr(2, 6),
-                file: file,
-                name: file.name,
-                size: file.size,
-                url: URL.createObjectURL(file),
-                category: categoryLabel,
+                file: f, name: f.name, size: f.size, url: URL.createObjectURL(f),
+                category: len < DEFAULT_CATEGORIES.length ? DEFAULT_CATEGORIES[len] : `Dokumentasi Tambahan #${len + 1}`,
                 addedAt: Date.now()
             };
-
-            state.collection.push(newPhoto);
-            dbSavePhoto(newPhoto);
-            addedCount++;
+            state.collection.push(item);
+            dbSavePhoto(item);
+            added++;
         }
-
-        // Jika belum ada foto aktif, jadikan foto pertama sebagai aktif
-        if (!state.activePhotoId && state.collection.length > 0) {
-            state.activePhotoId = state.collection[0].id;
-        }
-
+        if (!state.activePhotoId && state.collection.length > 0) state.activePhotoId = state.collection[0].id;
         syncLegacy();
-
-        if (rejectedErrors.length > 0) {
-            showNotification(rejectedErrors[0], 'warn', 5000);
-        } else if (addedCount > 0) {
-            showNotification(`${addedCount} foto ditambahkan ke koleksi sumber.`, 'success', 3500);
-        }
+        if (lastErr) showNotification(lastErr, 'warn', 5000);
+        else if (added > 0) showNotification(`${added} foto ditambahkan ke koleksi sumber.`, 'success', 3500);
         renderWidget();
     }
 
     function removePhoto(id) {
-        const index = state.collection.findIndex(p => p.id === id);
-        if (index === -1) return;
-
-        try {
-            URL.revokeObjectURL(state.collection[index].url);
-        } catch (e) { }
-
-        state.collection.splice(index, 1);
+        const idx = state.collection.findIndex(p => p.id === id);
+        if (idx === -1) return;
+        try { URL.revokeObjectURL(state.collection[idx].url); } catch (e) { }
+        state.collection.splice(idx, 1);
         dbDeletePhoto(id);
-
-        if (state.activePhotoId === id) {
-            state.activePhotoId = state.collection.length > 0 ? state.collection[0].id : null;
-        }
-
+        if (state.activePhotoId === id) state.activePhotoId = state.collection.length > 0 ? state.collection[0].id : null;
         syncLegacy();
         showNotification('Foto dihapus dari koleksi.', 'info', 2500);
         renderWidget();
     }
 
     function clearAllPhotos() {
-        state.collection.forEach(p => {
-            try { URL.revokeObjectURL(p.url); } catch (e) { }
-        });
+        state.collection.forEach(p => { try { URL.revokeObjectURL(p.url); } catch (e) { } });
         state.collection = [];
         state.activePhotoId = null;
         state.replaceTargetId = null;
         state.schoolDeliveries = {};
-
         dbClearPhotos();
         syncLegacy();
         showNotification('Koleksi foto telah dikosongkan.', 'info', 2500);
@@ -383,12 +238,11 @@
     }
 
     function selectPhotoForCamera(id) {
-        const photo = state.collection.find(p => p.id === id);
-        if (!photo) return;
-
+        const p = state.collection.find(x => x.id === id);
+        if (!p) return;
         state.activePhotoId = id;
         syncLegacy();
-        showNotification(`Foto siap di kamera: ${photo.category}`, 'info', 3000);
+        showNotification(`Foto siap di kamera: ${p.category}`, 'info', 3000);
         renderWidget();
     }
 
@@ -400,58 +254,50 @@
 
     function triggerReplacePhoto(id) {
         state.replaceTargetId = id;
-        const fileInput = document.getElementById('mbg-file-input');
-        if (fileInput) {
-            fileInput.value = '';
-            fileInput.removeAttribute('multiple');
-            fileInput.click();
-        }
+        const fi = doc.getElementById('mbg-file-input');
+        if (fi) { fi.value = ''; fi.removeAttribute('multiple'); fi.click(); }
     }
 
     function advanceQueue() {
-        const currentSchoolId = getActiveSchoolId();
-        const nextPending = state.collection.find(p => getPhotoDeliveryStatus(p.id, currentSchoolId) === 'pending');
-
-        if (nextPending) {
-            state.activePhotoId = nextPending.id;
+        const sId = getActiveSchoolId();
+        const next = state.collection.find(p => getPhotoDeliveryStatus(p.id, sId) === 'pending');
+        if (next) {
+            state.activePhotoId = next.id;
             syncLegacy();
-            showNotification(`Kamera siap untuk: ${nextPending.category}`, 'info', 3000);
-            renderWidget();
+            showNotification(`Kamera siap untuk: ${next.category}`, 'info', 3000);
         } else {
-            const allSent = state.collection.length > 0 && state.collection.every(p => getPhotoDeliveryStatus(p.id, currentSchoolId) === 'sent');
-            if (allSent) {
+            if (state.collection.length > 0 && state.collection.every(p => getPhotoDeliveryStatus(p.id, sId) === 'sent')) {
                 showNotification(`Semua ${state.collection.length} foto untuk [${state.currentSchool.name}] selesai terisi! 🎉 Anda dapat berganti ke sekolah berikutnya.`, 'success', 6000);
             }
             syncLegacy();
-            renderWidget();
         }
+        renderWidget();
     }
 
-    /* ==========================================================================
-       4. INTERSEPSI INPUT FILE FORM POP SIPGN (INJEKSI FOTO OTOMATIS)
-       Mencegah terbukanya kamera HP / galeri sistem secara manual di mobile.
-       ========================================================================== */
+    // 4. Intersepsi Input File POP SIPGN
     function isFileInput(el) {
         if (!el || el.id === 'mbg-file-input') return false;
-        const tag = (el.tagName || '').toUpperCase();
-        if (tag !== 'INPUT') return false;
-        const type = el.type || (el.getAttribute && el.getAttribute('type')) || '';
-        return type.toLowerCase() === 'file';
+        return (el.tagName || '').toUpperCase() === 'INPUT' && (el.type || (el.getAttribute && el.getAttribute('type')) || '').toLowerCase() === 'file';
     }
+
+    let lastInjectedInput = null;
+    let lastInjectedTime = 0;
 
     function injectPhotoIntoInput(inputEl, activePhoto) {
         if (!inputEl || !activePhoto || !activePhoto.file) return false;
+        const now = Date.now();
+        if (inputEl._mbgLastInject && (now - inputEl._mbgLastInject < 800)) {
+            return true;
+        }
+        inputEl._mbgLastInject = now;
+
         try {
             const DT = win.DataTransfer || (typeof DataTransfer !== 'undefined' ? DataTransfer : null);
             if (DT) {
                 try {
                     const dt = new DT();
-                    if (dt.items && typeof dt.items.add === 'function') {
-                        dt.items.add(activePhoto.file);
-                    }
-                    if (dt.files) {
-                        inputEl.files = dt.files;
-                    }
+                    if (dt.items && dt.items.add) dt.items.add(activePhoto.file);
+                    if (dt.files) inputEl.files = dt.files;
                 } catch (e) {
                     try { inputEl.files = [activePhoto.file]; } catch (e2) { }
                 }
@@ -460,192 +306,179 @@
             }
 
             win.mbgSelectedFile = activePhoto.file;
-
-            // Trigger event standar DOM agar Vue / React / form handler mendeteksi berkas
-            const EventCtor = win.Event || (typeof Event !== 'undefined' ? Event : null);
-            if (EventCtor && typeof inputEl.dispatchEvent === 'function') {
-                try { inputEl.dispatchEvent(new EventCtor('change', { bubbles: true })); } catch (e) { }
-                try { inputEl.dispatchEvent(new EventCtor('input', { bubbles: true })); } catch (e) { }
+            const Evt = win.Event || (typeof Event !== 'undefined' ? Event : null);
+            if (Evt && inputEl.dispatchEvent) {
+                try { inputEl.dispatchEvent(new Evt('change', { bubbles: true })); } catch (e) { }
+                try { inputEl.dispatchEvent(new Evt('input', { bubbles: true })); } catch (e) { }
             }
+            if (typeof inputEl.onchange === 'function') try { inputEl.onchange({ target: inputEl }); } catch (e) { }
+            if (typeof inputEl.oninput === 'function') try { inputEl.oninput({ target: inputEl }); } catch (e) { }
 
-            if (typeof inputEl.onchange === 'function') {
-                try { inputEl.onchange({ target: inputEl }); } catch (e) { }
-            }
-            if (typeof inputEl.oninput === 'function') {
-                try { inputEl.oninput({ target: inputEl }); } catch (e) { }
-            }
-
-            // Perbarui pratinjau thumbnail pada tampilan kartu form POP SIPGN jika ada
             try {
-                const parentBox = (typeof inputEl.closest === 'function')
-                    ? (inputEl.closest('.photo-card, .form-group, div, tr') || document)
-                    : document;
-                if (parentBox && typeof parentBox.querySelector === 'function') {
-                    const previewImg = parentBox.querySelector('img, .preview-box img');
-                    if (previewImg) previewImg.src = activePhoto.url;
+                // Perbarui thumbnail hanya pada card wadah input ini (hindari parent global doc/body)
+                const card = inputEl.closest ? inputEl.closest('.photo-card, .preview-box, [data-photo-slot], .form-group') : null;
+                if (card) {
+                    const img = card.querySelector('img');
+                    if (img) img.src = activePhoto.url;
                 }
             } catch (e) { }
 
             setPhotoDeliveryStatus(activePhoto.id, 'sent');
-            if (state.autoAdvance) {
-                advanceQueue();
-            } else {
-                syncLegacy();
-                renderWidget();
-            }
-
+            if (state.autoAdvance) advanceQueue();
+            else { syncLegacy(); renderWidget(); }
             showNotification(`✓ [${activePhoto.category}] berhasil dimasukkan!`, 'success', 3500);
             return true;
         } catch (err) {
-            console.error('[MBG Helper] Gagal memasukkan foto ke input form:', err);
             return false;
         }
+    }
+
+    function handleInputInjection(inputEl) {
+        if (!isFileInput(inputEl)) return false;
+        const now = Date.now();
+        if (lastInjectedInput === inputEl && (now - lastInjectedTime < 800)) {
+            return true;
+        }
+        const a = getActivePhoto();
+        if (!a || !a.file) return false;
+        lastInjectedInput = inputEl;
+        lastInjectedTime = now;
+        return injectPhotoIntoInput(inputEl, a);
     }
 
     function setupInputInterception() {
         if (win._mbgInputHooked) return;
         win._mbgInputHooked = true;
-
-        // 1. Hook HTMLInputElement.prototype.click agar .click() programmatik terintersepsi
         const HtmlInput = win.HTMLInputElement || (typeof HTMLInputElement !== 'undefined' ? HTMLInputElement : null);
         if (HtmlInput && HtmlInput.prototype) {
-            const origClick = HtmlInput.prototype.click;
+            const orig = HtmlInput.prototype.click;
             HtmlInput.prototype.click = function () {
                 if (isFileInput(this)) {
-                    const activePhoto = getActivePhoto();
-                    if (activePhoto && activePhoto.file) {
-                        const handled = injectPhotoIntoInput(this, activePhoto);
-                        if (handled) return; // Cegah dialog kamera / picker sistem terbuka
-                    }
+                    if (handleInputInjection(this)) return;
                 }
-                return origClick ? origClick.apply(this, arguments) : undefined;
+                return orig ? orig.apply(this, arguments) : undefined;
             };
         }
-
-        // 2. Listener capture-phase untuk klik pengguna langsung pada input/label form
-        if (typeof document !== 'undefined' && document.addEventListener) {
-            document.addEventListener('click', function (e) {
-                let targetInput = null;
-                if (e.target && isFileInput(e.target)) {
-                    targetInput = e.target;
-                } else if (e.target && typeof e.target.closest === 'function') {
-                    const label = e.target.closest('label');
-                    if (label) {
-                        const forId = label.getAttribute ? label.getAttribute('for') : null;
-                        const el = forId ? document.getElementById(forId) : label.querySelector('input[type="file"]');
-                        if (isFileInput(el)) targetInput = el;
+        if (typeof doc !== 'undefined' && doc.addEventListener) {
+            doc.addEventListener('click', function (e) {
+                let target = null;
+                if (e.target && isFileInput(e.target)) target = e.target;
+                else if (e.target && e.target.closest) {
+                    const lbl = e.target.closest('label');
+                    if (lbl) {
+                        const forId = lbl.getAttribute ? lbl.getAttribute('for') : null;
+                        const el = forId ? doc.getElementById(forId) : lbl.querySelector('input[type="file"]');
+                        if (isFileInput(el)) target = el;
                     }
                 }
-
-                if (targetInput) {
-                    const activePhoto = getActivePhoto();
-                    if (activePhoto && activePhoto.file) {
-                        if (typeof e.preventDefault === 'function') e.preventDefault();
-                        if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
-                        else if (typeof e.stopPropagation === 'function') e.stopPropagation();
-                        injectPhotoIntoInput(targetInput, activePhoto);
+                if (target) {
+                    if (handleInputInjection(target)) {
+                        if (e.preventDefault) e.preventDefault();
+                        if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+                        else if (e.stopPropagation) e.stopPropagation();
                     }
                 }
             }, true);
         }
     }
 
-    /* ==========================================================================
-       5. JEMBATAN WEBRTC VIRTUAL CAMERA STREAM (DENGAN PROTEKSI MEMORI HP)
-       ========================================================================== */
+    // 5. WebRTC Virtual Camera
+    let activeStreamPhoto = null;
+
     function hookWebRTC() {
         if (win._mbgGUMHooked) return;
         if (!win.navigator || !win.navigator.mediaDevices || !win.navigator.mediaDevices.getUserMedia) return;
-
         win._mbgGUMHooked = true;
         const oldGUM = win.navigator.mediaDevices.getUserMedia.bind(win.navigator.mediaDevices);
 
-        const virtualGUM = async function (constraints) {
-            const activePhoto = getActivePhoto();
-
-            if (constraints && constraints.video && activePhoto && activePhoto.file) {
+        // Hook Canvas drawImage agar jepretan POP SIPGN otomatis memajukan antrean
+        if (win.CanvasRenderingContext2D && win.CanvasRenderingContext2D.prototype && !win._mbgDrawImageHooked) {
+            win._mbgDrawImageHooked = true;
+            const origDraw = win.CanvasRenderingContext2D.prototype.drawImage;
+            win.CanvasRenderingContext2D.prototype.drawImage = function (image) {
                 try {
-                    const canvas = document.createElement('canvas');
-                    const imgEl = new win.Image();
-                    imgEl.src = activePhoto.url;
-
-                    // Tunggu load dengan fallback timeout agar tidak hang
-                    await new Promise((resolve) => {
-                        if (imgEl.complete && imgEl.naturalWidth) return resolve();
-                        imgEl.onload = () => resolve();
-                        imgEl.onerror = () => resolve();
-                        setTimeout(resolve, 2000);
-                    });
-
-                    // Skala resolusi aman (max 1280px) agar memori HP ringan
-                    let w = imgEl.naturalWidth || 1280;
-                    let h = imgEl.naturalHeight || 720;
-                    const maxDim = 1280;
-                    if (w > maxDim || h > maxDim) {
-                        if (w > h) {
-                            h = Math.round((h * maxDim) / w);
-                            w = maxDim;
-                        } else {
-                            w = Math.round((w * maxDim) / h);
-                            h = maxDim;
+                    if (image && (image.tagName === 'VIDEO' || (typeof HTMLVideoElement !== 'undefined' && image instanceof HTMLVideoElement))) {
+                        const cur = getActivePhoto();
+                        if (cur && getPhotoDeliveryStatus(cur.id) === 'pending') {
+                            setPhotoDeliveryStatus(cur.id, 'sent');
+                            if (state.autoAdvance) advanceQueue();
+                            else { syncLegacy(); renderWidget(); }
                         }
                     }
-                    canvas.width = w;
-                    canvas.height = h;
+                } catch (e) { }
+                return origDraw.apply(this, arguments);
+            };
+        }
 
+        const virtualGUM = async function (constraints) {
+            if (activeStreamPhoto && getPhotoDeliveryStatus(activeStreamPhoto.id) === 'pending') {
+                setPhotoDeliveryStatus(activeStreamPhoto.id, 'sent');
+                if (state.autoAdvance) advanceQueue();
+            }
+
+            let a = getActivePhoto();
+            if (state.autoAdvance && a && getPhotoDeliveryStatus(a.id) === 'sent') {
+                advanceQueue();
+                a = getActivePhoto();
+            }
+            activeStreamPhoto = a;
+
+            if (constraints && constraints.video && a && a.file) {
+                try {
+                    const canvas = doc.createElement('canvas');
+                    const img = new win.Image();
+                    img.src = a.url;
+                    await new Promise(r => {
+                        if (img.complete && img.naturalWidth) return r();
+                        img.onload = () => r();
+                        img.onerror = () => r();
+                        setTimeout(r, 2000);
+                    });
+
+                    let w = img.naturalWidth || 1280;
+                    let h = img.naturalHeight || 720;
+                    const maxDim = 1280;
+                    if (w > maxDim || h > maxDim) {
+                        if (w > h) { h = Math.round((h * maxDim) / w); w = maxDim; }
+                        else { w = Math.round((w * maxDim) / h); h = maxDim; }
+                    }
+                    canvas.width = w; canvas.height = h;
                     const ctx = canvas.getContext('2d');
-                    ctx.drawImage(imgEl, 0, 0, w, h);
+                    ctx.drawImage(img, 0, 0, w, h);
 
                     const stream = canvas.captureStream ? canvas.captureStream(20) : (canvas.mozCaptureStream ? canvas.mozCaptureStream(20) : null);
                     if (!stream) throw new Error('captureStream tidak didukung');
 
-                    const drawInterval = setInterval(() => {
-                        try {
-                            ctx.drawImage(imgEl, 0, 0, w, h);
-                        } catch (e) {
-                            clearInterval(drawInterval);
-                        }
+                    const interval = setInterval(() => {
+                        try { ctx.drawImage(img, 0, 0, w, h); } catch (e) { clearInterval(interval); }
                     }, 50);
 
-                    const videoTrack = stream.getVideoTracks()[0];
-                    if (videoTrack) {
-                        let finalized = false;
-                        const onStreamEnded = () => {
-                            if (finalized) return;
-                            finalized = true;
-                            clearInterval(drawInterval);
-
-                            // Tandai foto berhasil dijepret untuk sekolah saat ini
-                            setPhotoDeliveryStatus(activePhoto.id, 'sent');
-
-                            if (state.autoAdvance) {
-                                advanceQueue();
-                            } else {
-                                syncLegacy();
-                                renderWidget();
-                            }
+                    const track = stream.getVideoTracks()[0];
+                    if (track) {
+                        let fin = false;
+                        const onEnd = () => {
+                            if (fin) return;
+                            fin = true;
+                            clearInterval(interval);
+                            activeStreamPhoto = null;
+                            setPhotoDeliveryStatus(a.id, 'sent');
+                            if (state.autoAdvance) advanceQueue();
+                            else { syncLegacy(); renderWidget(); }
                         };
-
-                        const originalStop = videoTrack.stop.bind(videoTrack);
-                        videoTrack.stop = function () {
-                            originalStop();
-                            onStreamEnded();
-                        };
-                        videoTrack.addEventListener('ended', onStreamEnded);
+                        const origStop = track.stop.bind(track);
+                        track.stop = function () { origStop(); onEnd(); };
+                        track.addEventListener('ended', onEnd);
                     }
-
-                    showNotification(`Mengalirkan [${activePhoto.category}] ke kamera...`, 'info', 3000);
+                    showNotification(`Mengalirkan [${a.category}] ke kamera...`, 'info', 3000);
                     renderWidget();
                     return stream;
                 } catch (err) {
-                    console.error('[MBG Helper] Error mengalirkan foto virtual:', err);
-                    setPhotoDeliveryStatus(activePhoto.id, 'failed');
+                    setPhotoDeliveryStatus(a.id, 'failed');
                     showNotification('Gagal mengalirkan foto: ' + (err.message || 'Error'), 'error', 5000);
                     renderWidget();
                     throw err;
                 }
             }
-
             return oldGUM(constraints);
         };
 
@@ -653,352 +486,224 @@
         if (typeof MediaDevices !== 'undefined' && MediaDevices.prototype && MediaDevices.prototype.getUserMedia) {
             MediaDevices.prototype.getUserMedia = virtualGUM;
         }
-        if (win.navigator.getUserMedia) {
-            win.navigator.getUserMedia = function (c, success, error) {
-                virtualGUM(c).then(success).catch(error);
-            };
-        }
-        if (win.navigator.webkitGetUserMedia) {
-            win.navigator.webkitGetUserMedia = function (c, success, error) {
-                virtualGUM(c).then(success).catch(error);
-            };
-        }
+        if (win.navigator.getUserMedia) win.navigator.getUserMedia = (c, s, e) => virtualGUM(c).then(s).catch(e);
+        if (win.navigator.webkitGetUserMedia) win.navigator.webkitGetUserMedia = (c, s, e) => virtualGUM(c).then(s).catch(e);
     }
 
-    /* ==========================================================================
-       6. BERSIHKAN ATRIBUT CAPTURE SECARA BERKELANJUTAN (MUTATION OBSERVER)
-       ========================================================================== */
+    // 6. Capture Attribute Stripper
     function cleanCaptureAttributes() {
-        document.querySelectorAll('input[type="file"]').forEach(input => {
-            if (input.id !== 'mbg-file-input' && input.hasAttribute('capture')) {
-                input.removeAttribute('capture');
-            }
+        doc.querySelectorAll('input[type="file"]').forEach(i => {
+            if (i.id !== 'mbg-file-input' && i.hasAttribute('capture')) i.removeAttribute('capture');
         });
     }
-
     function setupCaptureObserver() {
         if (win._mbgObserverHooked) return;
         win._mbgObserverHooked = true;
         cleanCaptureAttributes();
-        const ObsCtor = win.MutationObserver || (typeof MutationObserver !== 'undefined' ? MutationObserver : null);
-        if (ObsCtor && document.body) {
-            const observer = new ObsCtor(() => cleanCaptureAttributes());
-            observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['capture'] });
-        }
+        const Obs = win.MutationObserver || (typeof MutationObserver !== 'undefined' ? MutationObserver : null);
+        if (Obs && doc.body) new Obs(cleanCaptureAttributes).observe(doc.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['capture'] });
     }
 
-    /* ==========================================================================
-       7. RENDER ANTARMUKA (DESKTOP & MOBILE SATU LOGIKA & SATU TAMPILAN)
-       ========================================================================== */
-    function renderDeliveryBadge(deliveryStatus, isActive) {
-        if (isActive) {
-            return `<span style="background:#0284c7;color:#ffffff;font-size:9px;font-weight:bold;padding:1px 6px;border-radius:10px;">📷 SIAP DI KAMERA</span>`;
-        }
-        switch (deliveryStatus) {
-            case 'sent':
-                return `<span style="background:#166534;color:#86efac;font-size:9px;font-weight:bold;padding:1px 6px;border-radius:10px;">✓ Terkirim</span>`;
-            case 'failed':
-                return `<span style="background:#991b1b;color:#fca5a5;font-size:9px;font-weight:bold;padding:1px 6px;border-radius:10px;">✕ Gagal</span>`;
-            case 'pending':
-            default:
-                return `<span style="background:#334155;color:#cbd5e1;font-size:9px;padding:1px 6px;border-radius:10px;">Menunggu</span>`;
-        }
+    // 7. Render UI
+    function ensureStyles() {
+        if (doc.getElementById('mbg-styles')) return;
+        const s = doc.createElement('style');
+        s.id = 'mbg-styles';
+        s.textContent = `
+#mbg-quick-bypass{position:fixed;bottom:16px;right:16px;z-index:999999999;background:#0f172a;color:#f8fafc;border:2px solid #3b82f6;border-radius:14px;padding:12px 14px;font-family:system-ui,-apple-system,sans-serif;box-shadow:0 12px 32px rgba(0,0,0,.6);width:340px;max-width:calc(100vw - 28px);box-sizing:border-box;font-size:13px;line-height:1.4}
+#mbg-quick-bypass.min{border-radius:24px;padding:8px 14px;width:auto;display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none}
+.mbg-flex{display:flex;align-items:center}
+.mbg-sb{display:flex;align-items:center;justify-content:space-between}
+.mbg-dot{width:10px;height:10px;border-radius:50%;background:#22c55e;box-shadow:0 0 8px #22c55e;display:inline-block}
+.mbg-btn{background:#2563eb;color:#fff;border:none;border-radius:6px;padding:8px 10px;font-size:12px;font-weight:bold;cursor:pointer}
+.mbg-btn-s{border:none;border-radius:4px;padding:2px 6px;font-size:10px;cursor:pointer;font-weight:bold}
+.mbg-badge{font-size:9px;font-weight:bold;padding:1px 6px;border-radius:10px}
+.mbg-card{display:flex;align-items:center;gap:8px;border-radius:8px;padding:6px 8px;margin-bottom:6px;border:1px solid #334155;background:#0f172a}
+.mbg-card.act{border:2px solid #38bdf8;background:#1e293b}
+.mbg-ell{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+`;
+        (doc.head || doc.body || doc.documentElement).appendChild(s);
     }
 
-    function renderCardActions(photo, isActive, deliveryStatus) {
-        let acts = '';
-        acts += `<button data-action="replace" data-id="${photo.id}" title="Ganti foto ini dengan foto lain dari galeri" style="background:#334155;color:#cbd5e1;border:none;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">Ganti</button>`;
-        if (!isActive) {
-            acts += `<button data-action="select" data-id="${photo.id}" title="Pilih foto ini ke kamera" style="background:#1e293b;color:#38bdf8;border:1px solid #3b82f6;border-radius:4px;padding:2px 6px;font-size:10px;cursor:pointer;">Pilih ke Kamera</button>`;
-        }
-        if (deliveryStatus === 'failed') {
-            acts += `<button data-action="retry" data-id="${photo.id}" title="Coba lagi foto ini pada sekolah saat ini" style="background:#991b1b;color:#fecaca;border:none;border-radius:4px;padding:2px 6px;font-size:10px;cursor:pointer;">Ulangi</button>`;
-        }
-        acts += `<button data-action="remove" data-id="${photo.id}" title="Hapus dari koleksi" style="background:transparent;color:#94a3b8;border:none;font-size:12px;cursor:pointer;padding:2px 4px;">✕</button>`;
-        return acts;
+    function renderDeliveryBadge(st, act) {
+        if (act) return `<span class="mbg-badge" style="background:#0284c7;color:#fff;">📷 SIAP DI KAMERA</span>`;
+        if (st === 'sent') return `<span class="mbg-badge" style="background:#166534;color:#86efac;">✓ Terkirim</span>`;
+        if (st === 'failed') return `<span class="mbg-badge" style="background:#991b1b;color:#fca5a5;">✕ Gagal</span>`;
+        return `<span class="mbg-badge" style="background:#334155;color:#cbd5e1;">Menunggu</span>`;
+    }
+
+    function renderCardActions(p, act, st) {
+        let h = `<button class="mbg-btn-s" data-action="replace" data-id="${p.id}" title="Ganti foto ini" style="background:#334155;color:#cbd5e1;">Ganti</button>`;
+        if (!act) h += `<button class="mbg-btn-s" data-action="select" data-id="${p.id}" title="Pilih ke kamera" style="background:#1e293b;color:#38bdf8;border:1px solid #3b82f6;">Pilih ke Kamera</button>`;
+        if (st === 'failed') h += `<button class="mbg-btn-s" data-action="retry" data-id="${p.id}" title="Coba lagi" style="background:#991b1b;color:#fecaca;">Ulangi</button>`;
+        h += `<button data-action="remove" data-id="${p.id}" title="Hapus" style="background:transparent;color:#94a3b8;border:none;font-size:12px;cursor:pointer;padding:2px 4px;">✕</button>`;
+        return h;
     }
 
     function renderWidget() {
-        let container = document.getElementById('mbg-quick-bypass');
-        if (!container) {
-            container = document.createElement('div');
-            container.id = 'mbg-quick-bypass';
-            if (document.body) {
-                document.body.appendChild(container);
-            } else {
-                return;
-            }
+        let el = doc.getElementById('mbg-quick-bypass');
+        if (!el) {
+            el = doc.createElement('div');
+            el.id = 'mbg-quick-bypass';
+            if (doc.body) doc.body.appendChild(el);
+            else return;
         }
+        ensureStyles();
 
-        const totalPhotos = state.collection.length;
-        const currentSchoolId = getActiveSchoolId();
-        const sentCount = state.collection.filter(p => getPhotoDeliveryStatus(p.id, currentSchoolId) === 'sent').length;
-        const failedCount = state.collection.filter(p => getPhotoDeliveryStatus(p.id, currentSchoolId) === 'failed').length;
+        const total = state.collection.length;
+        const sId = getActiveSchoolId();
+        const sent = state.collection.filter(p => getPhotoDeliveryStatus(p.id, sId) === 'sent').length;
+        const failed = state.collection.filter(p => getPhotoDeliveryStatus(p.id, sId) === 'failed').length;
 
-        // Mode Minimized (Dikecilkan)
         if (state.minimized) {
-            container.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:999999999;background:#0f172a;color:#f8fafc;border:2px solid #3b82f6;border-radius:24px;padding:8px 14px;font-family:system-ui,-apple-system,sans-serif;font-size:12px;box-shadow:0 8px 24px rgba(0,0,0,0.5);display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none;';
-            container.innerHTML = `
-                <span style="width:10px;height:10px;border-radius:50%;background:#22c55e;box-shadow:0 0 8px #22c55e;"></span>
-                <span style="font-weight:bold;">MBG (${sentCount}/${totalPhotos} Terisi)</span>
-                <button id="mbg-btn-expand" style="background:#2563eb;color:#fff;border:none;border-radius:12px;padding:2px 8px;font-size:11px;font-weight:bold;cursor:pointer;">Buka</button>
+            el.className = 'min';
+            el.innerHTML = `
+                <span class="mbg-dot"></span>
+                <span style="font-weight:bold;">MBG (${sent}/${total} Terisi)</span>
+                <button id="mbg-btn-expand" class="mbg-btn" style="padding:2px 8px;border-radius:12px;font-size:11px;">Buka</button>
             `;
-            container.onclick = () => {
-                state.minimized = false;
-                renderWidget();
-            };
+            el.onclick = () => { state.minimized = false; renderWidget(); };
             return;
         }
 
-        // Mode Normal (Expanded) — Responsif Penuh untuk Desktop & Layar HP
-        container.style.cssText = 'position:fixed;bottom:16px;right:16px;z-index:999999999;background:#0f172a;color:#f8fafc;border:2px solid #3b82f6;border-radius:14px;padding:12px 14px;font-family:system-ui,-apple-system,sans-serif;box-shadow:0 12px 32px rgba(0,0,0,0.6);width:340px;max-width:calc(100vw - 28px);box-sizing:border-box;font-size:13px;line-height:1.4;';
-        container.onclick = null;
+        el.className = '';
+        el.onclick = null;
 
-        // Header
-        let html = `
-            <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #334155;">
-                <div style="display:flex;align-items:center;gap:8px;">
-                    <span style="width:10px;height:10px;border-radius:50%;background:#22c55e;display:inline-block;box-shadow:0 0 8px #22c55e;"></span>
+        let h = `
+            <div class="mbg-sb" style="margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #334155;">
+                <div class="mbg-flex" style="gap:8px;">
+                    <span class="mbg-dot"></span>
                     <strong style="font-size:13px;color:#f8fafc;">MBG Photo Helper</strong>
                     <span style="background:#1e293b;color:#38bdf8;border:1px solid #3b82f6;border-radius:6px;font-size:10px;padding:1px 5px;font-weight:bold;">v2.2</span>
                 </div>
-                <div style="display:flex;align-items:center;gap:6px;">
-                    <button id="mbg-btn-minimize" title="Kecilkan Tampilan" style="background:#334155;color:#cbd5e1;border:none;border-radius:6px;width:24px;height:24px;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;">−</button>
-                </div>
+                <button id="mbg-btn-minimize" title="Kecilkan" style="background:#334155;color:#cbd5e1;border:none;border-radius:6px;width:24px;height:24px;font-size:13px;cursor:pointer;">−</button>
             </div>
-        `;
-
-        // Bar Konteks Sekolah & Tombol Sesi Baru
-        html += `
             <div style="background:#1e293b;border-radius:8px;padding:8px 10px;margin-bottom:8px;border:1px solid #334155;">
-                <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
-                    <span style="font-size:11px;font-weight:bold;color:#38bdf8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;" title="${escapeHtml(state.currentSchool.name)}">
-                        🏫 ${escapeHtml(state.currentSchool.name)}
-                    </span>
-                    <button id="mbg-btn-new-school" title="Mulai dokumentasi sekolah baru menggunakan foto yang sama" style="background:#2563eb;color:#fff;border:none;border-radius:4px;padding:2px 8px;font-size:10px;font-weight:bold;cursor:pointer;flex-shrink:0;">
-                        🔄 Sesi Baru
-                    </button>
+                <div class="mbg-sb" style="margin-bottom:4px;">
+                    <span class="mbg-ell" style="font-size:11px;font-weight:bold;color:#38bdf8;" title="${esc(state.currentSchool.name)}">🏫 ${esc(state.currentSchool.name)}</span>
+                    <button id="mbg-btn-new-school" class="mbg-btn-s" style="background:#2563eb;color:#fff;">🔄 Sesi Baru</button>
                 </div>
-                <div style="display:flex;justify-content:space-between;align-items:center;font-size:10px;color:#94a3b8;margin-bottom:4px;">
-                    <span>Koleksi: ${totalPhotos} Foto</span>
-                    <span style="font-weight:bold;color:${sentCount === totalPhotos && totalPhotos > 0 ? '#4ade80' : '#38bdf8'};">
-                        ${sentCount}/${totalPhotos} Terisi ${failedCount > 0 ? `(${failedCount} Gagal)` : ''}
-                    </span>
+                <div class="mbg-sb" style="font-size:10px;color:#94a3b8;margin-bottom:4px;">
+                    <span>Koleksi: ${total} Foto</span>
+                    <span style="font-weight:bold;color:${sent === total && total > 0 ? '#4ade80' : '#38bdf8'};">${sent}/${total} Terisi ${failed > 0 ? `(${failed} Gagal)` : ''}</span>
                 </div>
                 <div style="width:100%;height:5px;background:#334155;border-radius:3px;overflow:hidden;">
-                    <div style="width:${totalPhotos > 0 ? Math.round((sentCount / totalPhotos) * 100) : 0}%;height:100%;background:#22c55e;transition:width 0.3s;"></div>
+                    <div style="width:${total > 0 ? Math.round((sent / total) * 100) : 0}%;height:100%;background:#22c55e;transition:width .3s;"></div>
                 </div>
             </div>
         `;
 
-        // Bar Notifikasi
         if (state.notification.text) {
-            const bgMap = {
-                info: 'background:#1e3a8a;color:#bfdbfe;border:1px solid #3b82f6;',
-                success: 'background:#14532d;color:#bbf7d0;border:1px solid #22c55e;',
-                warn: 'background:#713f12;color:#fef08a;border:1px solid #eab308;',
-                error: 'background:#7f1d1d;color:#fecaca;border:1px solid #ef4444;'
-            };
-            html += `
-                <div style="padding:6px 10px;border-radius:6px;font-size:11px;margin-bottom:8px;${bgMap[state.notification.type] || bgMap.info}">
-                    ${escapeHtml(state.notification.text)}
-                </div>
-            `;
+            const bg = { info: 'background:#1e3a8a;color:#bfdbfe;border:1px solid #3b82f6;', success: 'background:#14532d;color:#bbf7d0;border:1px solid #22c55e;', warn: 'background:#713f12;color:#fef08a;border:1px solid #eab308;', error: 'background:#7f1d1d;color:#fecaca;border:1px solid #ef4444;' };
+            h += `<div style="padding:6px 10px;border-radius:6px;font-size:11px;margin-bottom:8px;${bg[state.notification.type] || bg.info}">${esc(state.notification.text)}</div>`;
         }
 
-        // Tombol Aksi Koleksi (Pilih / Tambah Foto & Reset Koleksi)
-        html += `
+        h += `
             <div style="display:flex;gap:6px;margin-bottom:8px;">
-                <button id="mbg-btn-add" style="flex:1;background:#2563eb;color:#ffffff;border:none;border-radius:6px;padding:8px 10px;font-size:12px;font-weight:bold;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:background 0.2s;">
-                    <span>📁</span> + Pilih / Tambah Foto
-                </button>
-                <input type="file" id="mbg-file-input" accept="image/jpeg,image/png,image/webp,image/jpg" multiple style="position:fixed;top:-9999px;left:-9999px;opacity:0.01;width:1px;height:1px;pointer-events:none;" />
-                ${totalPhotos > 0 ? `
-                    <button id="mbg-btn-clear" title="Kosongkan Seluruh Koleksi Foto Sumber" style="background:#334155;color:#f87171;border:none;border-radius:6px;padding:8px 10px;font-size:12px;font-weight:bold;cursor:pointer;">
-                        ✕ Reset
-                    </button>
-                ` : ''}
+                <button id="mbg-btn-add" class="mbg-btn" style="flex:1;display:flex;align-items:center;justify-content:center;gap:6px;"><span>📁</span> + Pilih / Tambah Foto</button>
+                <input type="file" id="mbg-file-input" accept="image/jpeg,image/png,image/webp,image/jpg" multiple style="position:fixed;top:-9999px;opacity:0;width:1px;height:1px;" />
+                ${total > 0 ? `<button id="mbg-btn-clear" class="mbg-btn" style="background:#334155;color:#f87171;">✕ Reset</button>` : ''}
             </div>
         `;
 
-        // Opsi Auto-Next & Kontrol Manual Antrean
-        if (totalPhotos > 0) {
-            html += `
-                <div style="display:flex;align-items:center;justify-content:space-between;font-size:11px;color:#cbd5e1;margin-bottom:8px;padding:0 2px;">
-                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none;">
-                        <input type="checkbox" id="mbg-chk-autonext" ${state.autoAdvance ? 'checked' : ''} style="cursor:pointer;" />
-                        Otomatis lanjut foto berikutnya
-                    </label>
-                    <button id="mbg-btn-next" title="Ganti ke foto antrean berikutnya" style="background:#1e293b;color:#38bdf8;border:1px solid #3b82f6;border-radius:4px;padding:2px 8px;font-size:10px;cursor:pointer;">
-                        Lewati >>
-                    </button>
+        if (total > 0) {
+            h += `
+                <div class="mbg-sb" style="font-size:11px;color:#cbd5e1;margin-bottom:8px;padding:0 2px;">
+                    <label style="display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="checkbox" id="mbg-chk-autonext" ${state.autoAdvance ? 'checked' : ''} /> Otomatis lanjut foto berikutnya</label>
+                    <button id="mbg-btn-next" class="mbg-btn-s" style="background:#1e293b;color:#38bdf8;border:1px solid #3b82f6;">Lewati >></button>
                 </div>
             `;
         }
 
-        // Daftar Koleksi Foto Sumber
-        if (totalPhotos === 0) {
-            html += `
-                <div style="border:2px dashed #334155;border-radius:8px;padding:16px 12px;text-align:center;color:#94a3b8;font-size:11px;margin-bottom:8px;">
-                    Belum ada foto dalam koleksi.<br/>
-                    Klik <strong>"+ Pilih / Tambah Foto"</strong> untuk memilih foto dokumentasi (Makanan, Ompreng, Cuci, Pendukung).<br/>
-                    <span style="color:#38bdf8;font-size:10px;margin-top:4px;display:inline-block;">💡 Foto tersimpan dan dapat dipakai berulang untuk banyak sekolah.</span>
-                </div>
-            `;
+        if (total === 0) {
+            h += `<div style="border:2px dashed #334155;border-radius:8px;padding:16px 12px;text-align:center;color:#94a3b8;font-size:11px;margin-bottom:8px;">Belum ada foto dalam koleksi.<br/>Klik <strong>"+ Pilih / Tambah Foto"</strong> untuk memilih foto dokumentasi.<br/><span style="color:#38bdf8;font-size:10px;margin-top:4px;display:inline-block;">💡 Foto tersimpan dan dapat dipakai berulang.</span></div>`;
         } else {
-            html += `<div style="max-height:210px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding-right:2px;margin-bottom:8px;">`;
-            state.collection.forEach((photo) => {
-                const isActive = (photo.id === state.activePhotoId);
-                const deliveryStatus = getPhotoDeliveryStatus(photo.id, currentSchoolId);
-                const borderStyle = isActive ? 'border:2px solid #38bdf8;background:#1e293b;' : 'border:1px solid #334155;background:#0f172a;';
-
-                html += `
-                    <div style="display:flex;align-items:center;gap:8px;border-radius:8px;padding:6px 8px;${borderStyle}">
-                        <img src="${photo.url}" style="width:46px;height:46px;object-fit:cover;border-radius:6px;border:1px solid #475569;flex-shrink:0;" alt="thumb" />
+            h += `<div style="max-height:210px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding-right:2px;margin-bottom:8px;">`;
+            state.collection.forEach(p => {
+                const act = p.id === state.activePhotoId;
+                const st = getPhotoDeliveryStatus(p.id, sId);
+                h += `
+                    <div class="mbg-card ${act ? 'act' : ''}">
+                        <img src="${p.url}" style="width:46px;height:46px;object-fit:cover;border-radius:6px;border:1px solid #475569;flex-shrink:0;" alt="thumb" />
                         <div style="flex:1;min-width:0;">
-                            <div style="font-size:11px;font-weight:bold;color:#f8fafc;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-                                ${escapeHtml(photo.category)}
-                            </div>
-                            <div style="font-size:10px;color:#94a3b8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-                                ${escapeHtml(photo.name)} (${formatSize(photo.size)})
-                            </div>
-                            <div style="margin-top:2px;display:flex;align-items:center;gap:4px;">
-                                ${renderDeliveryBadge(deliveryStatus, isActive)}
-                            </div>
+                            <div class="mbg-ell" style="font-size:11px;font-weight:bold;color:#f8fafc;">${esc(p.category)}</div>
+                            <div class="mbg-ell" style="font-size:10px;color:#94a3b8;">${esc(p.name)} (${formatSize(p.size)})</div>
+                            <div style="margin-top:2px;display:flex;align-items:center;gap:4px;">${renderDeliveryBadge(st, act)}</div>
                         </div>
-                        <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;">
-                            ${renderCardActions(photo, isActive, deliveryStatus)}
-                        </div>
+                        <div style="display:flex;flex-direction:column;gap:4px;flex-shrink:0;">${renderCardActions(p, act, st)}</div>
                     </div>
                 `;
             });
-            html += `</div>`;
+            h += `</div>`;
         }
 
-        // Catatan Footer Status Penyimpanan
-        html += `
-            <div style="font-size:10px;color:#64748b;border-top:1px solid #1e293b;padding-top:6px;display:flex;justify-content:space-between;align-items:center;">
-                <span title="Koleksi foto disimpan di IndexedDB browser Anda">💾 Koleksi Tersimpan (Pakai Berulang)</span>
-                <span>${totalPhotos} foto</span>
+        h += `
+            <div class="mbg-sb" style="font-size:10px;color:#64748b;border-top:1px solid #1e293b;padding-top:6px;">
+                <span>💾 Koleksi Tersimpan (Pakai Berulang)</span>
+                <span>${total} foto</span>
             </div>
         `;
+        el.innerHTML = h;
 
-        container.innerHTML = html;
-
-        // Pasang Event Listeners
-        const btnAdd = container.querySelector('#mbg-btn-add');
-        const fileInput = container.querySelector('#mbg-file-input');
-        const btnClear = container.querySelector('#mbg-btn-clear');
-        const btnMinimize = container.querySelector('#mbg-btn-minimize');
-        const chkAutoNext = container.querySelector('#mbg-chk-autonext');
-        const btnNext = container.querySelector('#mbg-btn-next');
-        const btnNewSchool = container.querySelector('#mbg-btn-new-school');
-
-        if (btnAdd && fileInput) {
-            btnAdd.onclick = () => {
-                state.replaceTargetId = null;
-                fileInput.value = '';
-                fileInput.setAttribute('multiple', '');
-                fileInput.click();
-            };
-            fileInput.onchange = (e) => {
-                const fl = (e && e.target && e.target.files) ? e.target.files : fileInput.files;
-                if (fl && fl.length > 0) {
-                    addPhotos(fl);
-                }
+        const fi = el.querySelector('#mbg-file-input');
+        const add = el.querySelector('#mbg-btn-add');
+        if (add && fi) {
+            add.onclick = () => { state.replaceTargetId = null; fi.value = ''; fi.setAttribute('multiple', ''); fi.click(); };
+            fi.onchange = (e) => { const fl = (e && e.target && e.target.files) ? e.target.files : fi.files; if (fl && fl.length) addPhotos(fl); };
+        }
+        const bns = el.querySelector('#mbg-btn-new-school');
+        if (bns) {
+            bns.onclick = () => {
+                const p = win.prompt ? win.prompt.bind(win) : (typeof prompt !== 'undefined' ? prompt : null);
+                const d = `Sekolah #${Object.keys(state.schoolDeliveries).length + 1}`;
+                const n = p ? p('Masukkan nama sekolah atau label sesi baru:', d) : d;
+                if (n !== null) startNewSchoolSession(String(n).trim());
             };
         }
-
-        if (btnNewSchool) {
-            btnNewSchool.onclick = () => {
-                const promptFn = win.prompt ? win.prompt.bind(win) : (typeof prompt !== 'undefined' ? prompt : null);
-                const defaultName = `Sekolah #${Object.keys(state.schoolDeliveries).length + 1}`;
-                const inputName = promptFn ? promptFn('Masukkan nama sekolah atau label sesi baru:', defaultName) : defaultName;
-                if (inputName !== null) {
-                    startNewSchoolSession(String(inputName).trim());
-                }
+        const clr = el.querySelector('#mbg-btn-clear');
+        if (clr) {
+            clr.onclick = () => {
+                const c = win.confirm ? win.confirm.bind(win) : (typeof confirm !== 'undefined' ? confirm : null);
+                if (!c || c('Kosongkan seluruh koleksi foto sumber dari penyimpanan?')) clearAllPhotos();
             };
         }
+        const min = el.querySelector('#mbg-btn-minimize');
+        if (min) min.onclick = (e) => { e.stopPropagation(); state.minimized = true; renderWidget(); };
+        const chk = el.querySelector('#mbg-chk-autonext');
+        if (chk) chk.onchange = (e) => { state.autoAdvance = e.target.checked; };
+        const nxt = el.querySelector('#mbg-btn-next');
+        if (nxt) nxt.onclick = () => advanceQueue();
 
-        if (btnClear) {
-            btnClear.onclick = () => {
-                const confirmFn = win.confirm ? win.confirm.bind(win) : (typeof confirm !== 'undefined' ? confirm : null);
-                if (!confirmFn || confirmFn('Kosongkan seluruh koleksi foto sumber dari penyimpanan? Anda perlu memilih ulang foto dari galeri setelah ini.')) {
-                    clearAllPhotos();
-                }
-            };
-        }
-
-        if (btnMinimize) {
-            btnMinimize.onclick = (e) => {
-                e.stopPropagation();
-                state.minimized = true;
-                renderWidget();
-            };
-        }
-
-        if (chkAutoNext) {
-            chkAutoNext.onchange = (e) => {
-                state.autoAdvance = e.target.checked;
-            };
-        }
-
-        if (btnNext) {
-            btnNext.onclick = () => {
-                advanceQueue();
-            };
-        }
-
-        // Listener aksi kartu foto
-        container.querySelectorAll('[data-action]').forEach(btn => {
+        el.querySelectorAll('[data-action]').forEach(btn => {
             btn.onclick = (e) => {
                 e.stopPropagation();
-                const action = btn.getAttribute('data-action');
+                const a = btn.getAttribute('data-action');
                 const id = btn.getAttribute('data-id');
-
-                if (action === 'select') {
-                    selectPhotoForCamera(id);
-                } else if (action === 'replace') {
-                    triggerReplacePhoto(id);
-                } else if (action === 'retry') {
-                    retryPhotoForSchool(id);
-                } else if (action === 'remove') {
-                    removePhoto(id);
-                }
+                if (a === 'select') selectPhotoForCamera(id);
+                else if (a === 'replace') triggerReplacePhoto(id);
+                else if (a === 'retry') retryPhotoForSchool(id);
+                else if (a === 'remove') removePhoto(id);
             };
         });
     }
 
-    function escapeHtml(str) {
-        if (!str) return '';
-        return String(str)
-            .split('&').join('&amp;')
-            .split('<').join('&lt;')
-            .split('>').join('&gt;')
-            .split('"').join('&quot;');
+    function esc(s) {
+        if (!s) return '';
+        return String(s).split('&').join('&amp;').split('<').join('&lt;').split('>').join('&gt;').split('"').join('&quot;');
     }
 
-    /* ==========================================================================
-       8. INISIALISASI MESIN
-       ========================================================================== */
+    // 8. Inisialisasi
     function init() {
         cleanCaptureAttributes();
         setupCaptureObserver();
         setupInputInterception();
         detectSchoolContext();
         hookWebRTC();
-        if (!document.getElementById('mbg-quick-bypass')) {
-            renderWidget();
-        }
+        if (!doc.getElementById('mbg-quick-bypass')) renderWidget();
         restoreCollectionFromStorage();
     }
 
-    // Interval penjaga untuk lifecycle SPA
     setInterval(init, 1500);
-
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', init);
-    } else {
-        init();
-    }
+    if (doc.readyState === 'loading') doc.addEventListener('DOMContentLoaded', init);
+    else init();
 })();

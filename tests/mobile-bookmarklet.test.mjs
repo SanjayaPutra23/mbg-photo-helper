@@ -562,4 +562,47 @@ describe('MBG Photo Helper — Debugging & Verifikasi Mobile Bookmarklet', () =>
         const scriptsAfterSecondRun = [...mockDoc.head.children, ...mockDoc.body.children].filter(c => c.tagName === 'SCRIPT');
         assert.strictEqual(scriptsAfterSecondRun.length, 1, 'Tidak boleh menambahkan script ganda jika MBG Helper sudah aktif');
     });
+
+    test('12. Pengisian 2 slot foto POP SIPGN berurutan menghasilkan berkas berbeda (anti-duplikasi)', async () => {
+        const { mockWin, mockDoc, elementsById } = createMockMobileEnv();
+        runBookmarklet(mockWin, mockDoc);
+
+        const fileInput = mockDoc.getElementById('mbg-file-input');
+        fileInput.onchange({
+            target: {
+                files: [
+                    { name: 'makanan_unik.jpg', size: 1024, type: 'image/jpeg' },
+                    { name: 'ompreng_unik.jpg', size: 1024, type: 'image/jpeg' }
+                ]
+            }
+        });
+
+        const st = mockWin._mbgState;
+        assert.strictEqual(st.collection.length, 2);
+
+        // Simulasi Slot 1
+        const popSlot1 = mockDoc.createElement('input');
+        popSlot1.attributes.type = 'file';
+        popSlot1.id = 'slot-foto-1';
+        elementsById.set('slot-foto-1', popSlot1);
+
+        popSlot1.click();
+        // Simulasi event ganda pada slot 1 (misal klik label berulang atau double-tap)
+        popSlot1.click();
+
+        assert.strictEqual(popSlot1.files.length, 1);
+        assert.strictEqual(popSlot1.files[0].name, 'makanan_unik.jpg', 'Slot 1 harus berisi foto makanan dan tidak tertimpa foto 2');
+
+        // Simulasi Slot 2
+        const popSlot2 = mockDoc.createElement('input');
+        popSlot2.attributes.type = 'file';
+        popSlot2.id = 'slot-foto-2';
+        elementsById.set('slot-foto-2', popSlot2);
+
+        popSlot2.click();
+
+        assert.strictEqual(popSlot2.files.length, 1);
+        assert.strictEqual(popSlot2.files[0].name, 'ompreng_unik.jpg', 'Slot 2 harus berisi foto ompreng yang berbeda');
+        assert.notStrictEqual(popSlot1.files[0].name, popSlot2.files[0].name, 'Kedua slot wajib memiliki berkas foto yang berbeda!');
+    });
 });
