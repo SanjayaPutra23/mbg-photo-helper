@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MBG - Local Photo Helper (Multi-Foto & Multi-Sekolah)
 // @namespace    https://pop-sipgn.bgn.go.id/
-// @version      2.2.0
+// @version      2.2.1
 // @description  Bypass Kamera POP SIPGN Otomatis & Koleksi Foto Multi-Sekolah untuk Dokumentasi SPPG MBG
 // @author       Antigravity 2.0
 // @match        *://pop-sipgn.bgn.go.id/*
@@ -30,8 +30,9 @@
         win._mbgState = {
             collection: [], // Koleksi Foto Sumber: Array of { id, file, name, size, url, category, addedAt }
             activePhotoId: null, // ID foto yang saat ini aktif di kamera virtual
+            replaceTargetId: null, // ID foto yang sedang ditargetkan untuk diganti
             currentSchool: { id: 'sch_default', name: 'Sekolah #1' }, // Konteks sekolah aktif
-            schoolDeliveries: {}, // Status pengiriman per sekolah: { [schoolId]: { [photoId]: 'pending'|'sent'|'failed' } }
+            schoolDeliveries: { sch_default: {} }, // Status pengiriman per sekolah: { [schoolId]: { [photoId]: 'pending'|'sent'|'failed' } }
             autoAdvance: true,
             minimized: false,
             notification: { text: '', type: 'info', timer: null },
@@ -39,10 +40,14 @@
         };
     }
     const state = win._mbgState;
+    if (!state.schoolDeliveries) state.schoolDeliveries = {};
+    if (state.currentSchool && !state.schoolDeliveries[state.currentSchool.id]) {
+        state.schoolDeliveries[state.currentSchool.id] = {};
+    }
 
     /* ==========================================================================
        1. PENYIMPANAN PERSISTEN BERKAS FOTO DENGAN INDEXEDDB
-       Menyimpan objek File/Blob secara biner tanpa batasan 5MB string localStorage
+       Menyimpan objek File/Blob secara biner tanpa batasan string localStorage
        ========================================================================== */
     const DB_NAME = 'MBG_PhotoHelper_DB';
     const DB_VERSION = 1;
@@ -128,51 +133,58 @@
 
     // Pulihkan koleksi foto dari IndexedDB saat inisialisasi
     async function restoreCollectionFromStorage() {
-        if (state.storageReady) return;
+        if (state.storageReady || state.collection.length > 0) return;
         state.storageReady = true;
 
-        const storedItems = await dbLoadAllPhotos();
-        if (storedItems && storedItems.length > 0 && state.collection.length === 0) {
-            storedItems.forEach(item => {
-                state.collection.push({
-                    id: item.id,
-                    file: item.file,
-                    name: item.name,
-                    size: item.size,
-                    url: URL.createObjectURL(item.file),
-                    category: item.category,
-                    addedAt: item.addedAt
+        try {
+            const storedItems = await dbLoadAllPhotos();
+            if (storedItems && storedItems.length > 0 && state.collection.length === 0) {
+                storedItems.sort((a, b) => (a.addedAt || 0) - (b.addedAt || 0));
+                storedItems.forEach(item => {
+                    if (item.file && !state.collection.some(p => p.id === item.id)) {
+                        state.collection.push({
+                            id: item.id,
+                            file: item.file,
+                            name: item.name,
+                            size: item.size,
+                            url: URL.createObjectURL(item.file),
+                            category: item.category,
+                            addedAt: item.addedAt
+                        });
+                    }
                 });
-            });
 
-            if (!state.activePhotoId && state.collection.length > 0) {
-                state.activePhotoId = state.collection[0].id;
+                if (!state.activePhotoId && state.collection.length > 0) {
+                    state.activePhotoId = state.collection[0].id;
+                }
+                syncLegacy();
+                showNotification(`${storedItems.length} foto dipulihkan dari penyimpanan lokal. Siap digunakan!`, 'info', 3000);
+                renderWidget();
             }
-            syncLegacy();
-            showNotification(`${storedItems.length} foto dipulihkan dari penyimpanan lokal. Siap digunakan!`, 'info', 3000);
-            renderWidget();
-        }
+        } catch (e) { }
     }
 
     /* ==========================================================================
        2. MANAJEMEN KONTEKS SEKOLAH & STATUS PENGIRIMAN TERPISAH
        ========================================================================== */
     function getActiveSchoolId() {
-        return state.currentSchool.id || 'sch_default';
+        return (state.currentSchool && state.currentSchool.id) || 'sch_default';
     }
 
-    function getPhotoDeliveryStatus(photoId, schoolId = getActiveSchoolId()) {
-        if (!state.schoolDeliveries[schoolId]) {
-            state.schoolDeliveries[schoolId] = {};
+    function getPhotoDeliveryStatus(photoId, schoolId = null) {
+        const sId = schoolId || getActiveSchoolId();
+        if (!state.schoolDeliveries[sId]) {
+            state.schoolDeliveries[sId] = {};
         }
-        return state.schoolDeliveries[schoolId][photoId] || 'pending';
+        return state.schoolDeliveries[sId][photoId] || 'pending';
     }
 
-    function setPhotoDeliveryStatus(photoId, status, schoolId = getActiveSchoolId()) {
-        if (!state.schoolDeliveries[schoolId]) {
-            state.schoolDeliveries[schoolId] = {};
+    function setPhotoDeliveryStatus(photoId, status, schoolId = null) {
+        const sId = schoolId || getActiveSchoolId();
+        if (!state.schoolDeliveries[sId]) {
+            state.schoolDeliveries[sId] = {};
         }
-        state.schoolDeliveries[schoolId][photoId] = status;
+        state.schoolDeliveries[sId][photoId] = status;
     }
 
     // Memulai sesi baru untuk sekolah berikutnya dengan koleksi foto yang sama
@@ -199,7 +211,6 @@
     // Deteksi konteks sekolah dari DOM POP SIPGN jika tersedia
     function detectSchoolContext() {
         try {
-            // Periksa elemen judul atau label sekolah di form POP SIPGN
             const candidateElements = document.querySelectorAll('h1, h2, h3, h4, .school-name, .text-primary, [data-school]');
             for (let el of candidateElements) {
                 const txt = el.innerText ? el.innerText.trim() : '';
@@ -215,11 +226,11 @@
     }
 
     /* ==========================================================================
-       3. PENGELOLAAN KOLEKSI FOTO SUMBER (PERSISTEN & FLEKSIBEL)
+       3. PENGELOLAAN KOLEKSI FOTO SUMBER (ADD, REPLACE, REMOVE, ADVANCE)
        ========================================================================== */
     function validatePhoto(file) {
         if (!file) return { valid: false, error: 'Berkas tidak ditemukan.' };
-        const nameLower = file.name.toLowerCase();
+        const nameLower = file.name ? file.name.toLowerCase() : '';
         const hasValidExt = VALID_EXTENSIONS.some(ext => nameLower.endsWith(ext));
         const isImageMime = file.type ? file.type.startsWith('image/') : false;
 
@@ -267,9 +278,36 @@
         win.mbgPhotoList = state.collection;
     }
 
-    async function addPhotos(fileList) {
+    function addPhotos(fileList) {
         if (!fileList || fileList.length === 0) return;
 
+        // Mode Ganti Foto Spesifik (Replace Single Photo)
+        if (state.replaceTargetId) {
+            const targetId = state.replaceTargetId;
+            state.replaceTargetId = null;
+            const target = state.collection.find(p => p.id === targetId);
+            if (target && fileList[0]) {
+                const val = validatePhoto(fileList[0]);
+                if (!val.valid) {
+                    showNotification(val.error, 'warn', 4000);
+                    return;
+                }
+                try { URL.revokeObjectURL(target.url); } catch (e) { }
+                target.file = fileList[0];
+                target.name = fileList[0].name;
+                target.size = fileList[0].size;
+                target.url = URL.createObjectURL(fileList[0]);
+                setPhotoDeliveryStatus(target.id, 'pending');
+                state.activePhotoId = target.id;
+                dbSavePhoto(target);
+                syncLegacy();
+                showNotification(`Foto [${target.category}] berhasil diganti.`, 'success', 3500);
+                renderWidget();
+                return;
+            }
+        }
+
+        // Mode Tambah Foto Baru ke Koleksi
         let addedCount = 0;
         let rejectedErrors = [];
 
@@ -316,7 +354,7 @@
         renderWidget();
     }
 
-    async function removePhoto(id) {
+    function removePhoto(id) {
         const index = state.collection.findIndex(p => p.id === id);
         if (index === -1) return;
 
@@ -325,7 +363,7 @@
         } catch (e) { }
 
         state.collection.splice(index, 1);
-        await dbDeletePhoto(id);
+        dbDeletePhoto(id);
 
         if (state.activePhotoId === id) {
             state.activePhotoId = state.collection.length > 0 ? state.collection[0].id : null;
@@ -336,14 +374,16 @@
         renderWidget();
     }
 
-    async function clearAllPhotos() {
+    function clearAllPhotos() {
         state.collection.forEach(p => {
             try { URL.revokeObjectURL(p.url); } catch (e) { }
         });
         state.collection = [];
         state.activePhotoId = null;
-        await dbClearPhotos();
+        state.replaceTargetId = null;
+        state.schoolDeliveries = {};
 
+        dbClearPhotos();
         syncLegacy();
         showNotification('Koleksi foto telah dikosongkan.', 'info', 2500);
         renderWidget();
@@ -365,9 +405,18 @@
         showNotification('Foto disiapkan ulang untuk pengiriman sekolah ini.', 'info', 3000);
     }
 
+    function triggerReplacePhoto(id) {
+        state.replaceTargetId = id;
+        const fileInput = document.getElementById('mbg-file-input');
+        if (fileInput) {
+            fileInput.value = '';
+            fileInput.removeAttribute('multiple');
+            fileInput.click();
+        }
+    }
+
     function advanceQueue() {
         const currentSchoolId = getActiveSchoolId();
-        // Cari foto berikutnya dalam koleksi yang status pengirimannya masih 'pending' untuk sekolah ini
         const nextPending = state.collection.find(p => getPhotoDeliveryStatus(p.id, currentSchoolId) === 'pending');
 
         if (nextPending) {
@@ -386,8 +435,296 @@
     }
 
     /* ==========================================================================
-       4. RENDER ANTARMUKA (UI DESKTOP & MOBILE SATU SUMBER & IDENTIK)
+       4. INTERSEPSI INPUT FILE FORM POP SIPGN (INJEKSI FOTO OTOMATIS)
+       Mencegah terbukanya kamera HP / galeri sistem secara manual di mobile.
        ========================================================================== */
+    function isFileInput(el) {
+        if (!el || el.id === 'mbg-file-input') return false;
+        const tag = (el.tagName || '').toUpperCase();
+        if (tag !== 'INPUT') return false;
+        const type = el.type || (el.getAttribute && el.getAttribute('type')) || '';
+        return type.toLowerCase() === 'file';
+    }
+
+    function injectPhotoIntoInput(inputEl, activePhoto) {
+        if (!inputEl || !activePhoto || !activePhoto.file) return false;
+        try {
+            const DT = win.DataTransfer || (typeof DataTransfer !== 'undefined' ? DataTransfer : null);
+            if (DT) {
+                try {
+                    const dt = new DT();
+                    if (dt.items && typeof dt.items.add === 'function') {
+                        dt.items.add(activePhoto.file);
+                    }
+                    if (dt.files) {
+                        inputEl.files = dt.files;
+                    }
+                } catch (e) {
+                    try { inputEl.files = [activePhoto.file]; } catch (e2) { }
+                }
+            } else {
+                try { inputEl.files = [activePhoto.file]; } catch (e3) { }
+            }
+
+            win.mbgSelectedFile = activePhoto.file;
+
+            // Trigger event standar DOM agar Vue / React / form handler mendeteksi berkas
+            const EventCtor = win.Event || (typeof Event !== 'undefined' ? Event : null);
+            if (EventCtor && typeof inputEl.dispatchEvent === 'function') {
+                try { inputEl.dispatchEvent(new EventCtor('change', { bubbles: true })); } catch (e) { }
+                try { inputEl.dispatchEvent(new EventCtor('input', { bubbles: true })); } catch (e) { }
+            }
+
+            if (typeof inputEl.onchange === 'function') {
+                try { inputEl.onchange({ target: inputEl }); } catch (e) { }
+            }
+            if (typeof inputEl.oninput === 'function') {
+                try { inputEl.oninput({ target: inputEl }); } catch (e) { }
+            }
+
+            // Perbarui pratinjau thumbnail pada tampilan kartu form POP SIPGN jika ada
+            try {
+                const parentBox = (typeof inputEl.closest === 'function')
+                    ? (inputEl.closest('.photo-card, .form-group, div, tr') || document)
+                    : document;
+                if (parentBox && typeof parentBox.querySelector === 'function') {
+                    const previewImg = parentBox.querySelector('img, .preview-box img');
+                    if (previewImg) previewImg.src = activePhoto.url;
+                }
+            } catch (e) { }
+
+            setPhotoDeliveryStatus(activePhoto.id, 'sent');
+            if (state.autoAdvance) {
+                advanceQueue();
+            } else {
+                syncLegacy();
+                renderWidget();
+            }
+
+            showNotification(`✓ [${activePhoto.category}] berhasil dimasukkan!`, 'success', 3500);
+            return true;
+        } catch (err) {
+            console.error('[MBG Helper] Gagal memasukkan foto ke input form:', err);
+            return false;
+        }
+    }
+
+    function setupInputInterception() {
+        if (win._mbgInputHooked) return;
+        win._mbgInputHooked = true;
+
+        // 1. Hook HTMLInputElement.prototype.click agar .click() programmatik terintersepsi
+        const HtmlInput = win.HTMLInputElement || (typeof HTMLInputElement !== 'undefined' ? HTMLInputElement : null);
+        if (HtmlInput && HtmlInput.prototype) {
+            const origClick = HtmlInput.prototype.click;
+            HtmlInput.prototype.click = function () {
+                if (isFileInput(this)) {
+                    const activePhoto = getActivePhoto();
+                    if (activePhoto && activePhoto.file) {
+                        const handled = injectPhotoIntoInput(this, activePhoto);
+                        if (handled) return; // Cegah dialog kamera / picker sistem terbuka
+                    }
+                }
+                return origClick ? origClick.apply(this, arguments) : undefined;
+            };
+        }
+
+        // 2. Listener capture-phase untuk klik pengguna langsung pada input/label form
+        if (typeof document !== 'undefined' && document.addEventListener) {
+            document.addEventListener('click', function (e) {
+                let targetInput = null;
+                if (e.target && isFileInput(e.target)) {
+                    targetInput = e.target;
+                } else if (e.target && typeof e.target.closest === 'function') {
+                    const label = e.target.closest('label');
+                    if (label) {
+                        const forId = label.getAttribute ? label.getAttribute('for') : null;
+                        const el = forId ? document.getElementById(forId) : label.querySelector('input[type="file"]');
+                        if (isFileInput(el)) targetInput = el;
+                    }
+                }
+
+                if (targetInput) {
+                    const activePhoto = getActivePhoto();
+                    if (activePhoto && activePhoto.file) {
+                        if (typeof e.preventDefault === 'function') e.preventDefault();
+                        if (typeof e.stopImmediatePropagation === 'function') e.stopImmediatePropagation();
+                        else if (typeof e.stopPropagation === 'function') e.stopPropagation();
+                        injectPhotoIntoInput(targetInput, activePhoto);
+                    }
+                }
+            }, true);
+        }
+    }
+
+    /* ==========================================================================
+       5. JEMBATAN WEBRTC VIRTUAL CAMERA STREAM (DENGAN PROTEKSI MEMORI HP)
+       ========================================================================== */
+    function hookWebRTC() {
+        if (win._mbgGUMHooked) return;
+        if (!win.navigator || !win.navigator.mediaDevices || !win.navigator.mediaDevices.getUserMedia) return;
+
+        win._mbgGUMHooked = true;
+        const oldGUM = win.navigator.mediaDevices.getUserMedia.bind(win.navigator.mediaDevices);
+
+        const virtualGUM = async function (constraints) {
+            const activePhoto = getActivePhoto();
+
+            if (constraints && constraints.video && activePhoto && activePhoto.file) {
+                try {
+                    const canvas = document.createElement('canvas');
+                    const imgEl = new win.Image();
+                    imgEl.src = activePhoto.url;
+
+                    // Tunggu load dengan fallback timeout agar tidak hang
+                    await new Promise((resolve) => {
+                        if (imgEl.complete && imgEl.naturalWidth) return resolve();
+                        imgEl.onload = () => resolve();
+                        imgEl.onerror = () => resolve();
+                        setTimeout(resolve, 2000);
+                    });
+
+                    // Skala resolusi aman (max 1280px) agar memori HP ringan
+                    let w = imgEl.naturalWidth || 1280;
+                    let h = imgEl.naturalHeight || 720;
+                    const maxDim = 1280;
+                    if (w > maxDim || h > maxDim) {
+                        if (w > h) {
+                            h = Math.round((h * maxDim) / w);
+                            w = maxDim;
+                        } else {
+                            w = Math.round((w * maxDim) / h);
+                            h = maxDim;
+                        }
+                    }
+                    canvas.width = w;
+                    canvas.height = h;
+
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(imgEl, 0, 0, w, h);
+
+                    const stream = canvas.captureStream ? canvas.captureStream(20) : (canvas.mozCaptureStream ? canvas.mozCaptureStream(20) : null);
+                    if (!stream) throw new Error('captureStream tidak didukung');
+
+                    const drawInterval = setInterval(() => {
+                        try {
+                            ctx.drawImage(imgEl, 0, 0, w, h);
+                        } catch (e) {
+                            clearInterval(drawInterval);
+                        }
+                    }, 50);
+
+                    const videoTrack = stream.getVideoTracks()[0];
+                    if (videoTrack) {
+                        let finalized = false;
+                        const onStreamEnded = () => {
+                            if (finalized) return;
+                            finalized = true;
+                            clearInterval(drawInterval);
+
+                            // Tandai foto berhasil dijepret untuk sekolah saat ini
+                            setPhotoDeliveryStatus(activePhoto.id, 'sent');
+
+                            if (state.autoAdvance) {
+                                advanceQueue();
+                            } else {
+                                syncLegacy();
+                                renderWidget();
+                            }
+                        };
+
+                        const originalStop = videoTrack.stop.bind(videoTrack);
+                        videoTrack.stop = function () {
+                            originalStop();
+                            onStreamEnded();
+                        };
+                        videoTrack.addEventListener('ended', onStreamEnded);
+                    }
+
+                    showNotification(`Mengalirkan [${activePhoto.category}] ke kamera...`, 'info', 3000);
+                    renderWidget();
+                    return stream;
+                } catch (err) {
+                    console.error('[MBG Helper] Error mengalirkan foto virtual:', err);
+                    setPhotoDeliveryStatus(activePhoto.id, 'failed');
+                    showNotification('Gagal mengalirkan foto: ' + (err.message || 'Error'), 'error', 5000);
+                    renderWidget();
+                    throw err;
+                }
+            }
+
+            return oldGUM(constraints);
+        };
+
+        win.navigator.mediaDevices.getUserMedia = virtualGUM;
+        if (typeof MediaDevices !== 'undefined' && MediaDevices.prototype && MediaDevices.prototype.getUserMedia) {
+            MediaDevices.prototype.getUserMedia = virtualGUM;
+        }
+        if (win.navigator.getUserMedia) {
+            win.navigator.getUserMedia = function (c, success, error) {
+                virtualGUM(c).then(success).catch(error);
+            };
+        }
+        if (win.navigator.webkitGetUserMedia) {
+            win.navigator.webkitGetUserMedia = function (c, success, error) {
+                virtualGUM(c).then(success).catch(error);
+            };
+        }
+    }
+
+    /* ==========================================================================
+       6. BERSIHKAN ATRIBUT CAPTURE SECARA BERKELANJUTAN (MUTATION OBSERVER)
+       ========================================================================== */
+    function cleanCaptureAttributes() {
+        document.querySelectorAll('input[type="file"]').forEach(input => {
+            if (input.id !== 'mbg-file-input' && input.hasAttribute('capture')) {
+                input.removeAttribute('capture');
+            }
+        });
+    }
+
+    function setupCaptureObserver() {
+        if (win._mbgObserverHooked) return;
+        win._mbgObserverHooked = true;
+        cleanCaptureAttributes();
+        const ObsCtor = win.MutationObserver || (typeof MutationObserver !== 'undefined' ? MutationObserver : null);
+        if (ObsCtor && document.body) {
+            const observer = new ObsCtor(() => cleanCaptureAttributes());
+            observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['capture'] });
+        }
+    }
+
+    /* ==========================================================================
+       7. RENDER ANTARMUKA (DESKTOP & MOBILE SATU LOGIKA & SATU TAMPILAN)
+       ========================================================================== */
+    function renderDeliveryBadge(deliveryStatus, isActive) {
+        if (isActive) {
+            return `<span style="background:#0284c7;color:#ffffff;font-size:9px;font-weight:bold;padding:1px 6px;border-radius:10px;">📷 SIAP DI KAMERA</span>`;
+        }
+        switch (deliveryStatus) {
+            case 'sent':
+                return `<span style="background:#166534;color:#86efac;font-size:9px;font-weight:bold;padding:1px 6px;border-radius:10px;">✓ Terkirim</span>`;
+            case 'failed':
+                return `<span style="background:#991b1b;color:#fca5a5;font-size:9px;font-weight:bold;padding:1px 6px;border-radius:10px;">✕ Gagal</span>`;
+            case 'pending':
+            default:
+                return `<span style="background:#334155;color:#cbd5e1;font-size:9px;padding:1px 6px;border-radius:10px;">Menunggu</span>`;
+        }
+    }
+
+    function renderCardActions(photo, isActive, deliveryStatus) {
+        let acts = '';
+        acts += `<button data-action="replace" data-id="${photo.id}" title="Ganti foto ini dengan foto lain dari galeri" style="background:#334155;color:#cbd5e1;border:none;border-radius:4px;padding:2px 6px;font-size:10px;font-weight:bold;cursor:pointer;">Ganti</button>`;
+        if (!isActive) {
+            acts += `<button data-action="select" data-id="${photo.id}" title="Pilih foto ini ke kamera" style="background:#1e293b;color:#38bdf8;border:1px solid #3b82f6;border-radius:4px;padding:2px 6px;font-size:10px;cursor:pointer;">Pilih ke Kamera</button>`;
+        }
+        if (deliveryStatus === 'failed') {
+            acts += `<button data-action="retry" data-id="${photo.id}" title="Coba lagi foto ini pada sekolah saat ini" style="background:#991b1b;color:#fecaca;border:none;border-radius:4px;padding:2px 6px;font-size:10px;cursor:pointer;">Ulangi</button>`;
+        }
+        acts += `<button data-action="remove" data-id="${photo.id}" title="Hapus dari koleksi" style="background:transparent;color:#94a3b8;border:none;font-size:12px;cursor:pointer;padding:2px 4px;">✕</button>`;
+        return acts;
+    }
+
     function renderWidget() {
         let container = document.getElementById('mbg-quick-bypass');
         if (!container) {
@@ -482,7 +819,7 @@
                 <button id="mbg-btn-add" style="flex:1;background:#2563eb;color:#ffffff;border:none;border-radius:6px;padding:8px 10px;font-size:12px;font-weight:bold;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;transition:background 0.2s;">
                     <span>📁</span> + Pilih / Tambah Foto
                 </button>
-                <input type="file" id="mbg-file-input" accept="image/jpeg,image/png,image/webp,image/jpg" multiple style="position:absolute;left:-9999px;opacity:0;width:1px;height:1px;" />
+                <input type="file" id="mbg-file-input" accept="image/jpeg,image/png,image/webp,image/jpg" multiple style="position:fixed;top:-9999px;left:-9999px;opacity:0.01;width:1px;height:1px;pointer-events:none;" />
                 ${totalPhotos > 0 ? `
                     <button id="mbg-btn-clear" title="Kosongkan Seluruh Koleksi Foto Sumber" style="background:#334155;color:#f87171;border:none;border-radius:6px;padding:8px 10px;font-size:12px;font-weight:bold;cursor:pointer;">
                         ✕ Reset
@@ -517,7 +854,7 @@
             `;
         } else {
             html += `<div style="max-height:210px;overflow-y:auto;display:flex;flex-direction:column;gap:6px;padding-right:2px;margin-bottom:8px;">`;
-            state.collection.forEach((photo, idx) => {
+            state.collection.forEach((photo) => {
                 const isActive = (photo.id === state.activePhotoId);
                 const deliveryStatus = getPhotoDeliveryStatus(photo.id, currentSchoolId);
                 const borderStyle = isActive ? 'border:2px solid #38bdf8;background:#1e293b;' : 'border:1px solid #334155;background:#0f172a;';
@@ -566,12 +903,15 @@
 
         if (btnAdd && fileInput) {
             btnAdd.onclick = () => {
+                state.replaceTargetId = null;
                 fileInput.value = '';
+                fileInput.setAttribute('multiple', '');
                 fileInput.click();
             };
             fileInput.onchange = (e) => {
-                if (e.target.files && e.target.files.length > 0) {
-                    addPhotos(e.target.files);
+                const fl = (e && e.target && e.target.files) ? e.target.files : fileInput.files;
+                if (fl && fl.length > 0) {
+                    addPhotos(fl);
                 }
             };
         }
@@ -625,6 +965,8 @@
 
                 if (action === 'select') {
                     selectPhotoForCamera(id);
+                } else if (action === 'replace') {
+                    triggerReplacePhoto(id);
                 } else if (action === 'retry') {
                     retryPhotoForSchool(id);
                 } else if (action === 'remove') {
@@ -632,33 +974,6 @@
                 }
             };
         });
-    }
-
-    function renderDeliveryBadge(deliveryStatus, isActive) {
-        if (isActive) {
-            return `<span style="background:#0284c7;color:#ffffff;font-size:9px;font-weight:bold;padding:1px 6px;border-radius:10px;">📷 SIAP DI KAMERA</span>`;
-        }
-        switch (deliveryStatus) {
-            case 'sent':
-                return `<span style="background:#166534;color:#86efac;font-size:9px;font-weight:bold;padding:1px 6px;border-radius:10px;">✓ Terkirim</span>`;
-            case 'failed':
-                return `<span style="background:#991b1b;color:#fca5a5;font-size:9px;font-weight:bold;padding:1px 6px;border-radius:10px;">✕ Gagal</span>`;
-            case 'pending':
-            default:
-                return `<span style="background:#334155;color:#cbd5e1;font-size:9px;padding:1px 6px;border-radius:10px;">Menunggu</span>`;
-        }
-    }
-
-    function renderCardActions(photo, isActive, deliveryStatus) {
-        let acts = '';
-        if (!isActive) {
-            acts += `<button data-action="select" data-id="${photo.id}" title="Pilih foto ini untuk jepretan kamera berikutnya" style="background:#1e293b;color:#38bdf8;border:1px solid #3b82f6;border-radius:4px;padding:2px 6px;font-size:10px;cursor:pointer;">Pilih ke Kamera</button>`;
-        }
-        if (deliveryStatus === 'failed') {
-            acts += `<button data-action="retry" data-id="${photo.id}" title="Coba lagi foto ini pada sekolah saat ini" style="background:#991b1b;color:#fecaca;border:none;border-radius:4px;padding:2px 6px;font-size:10px;cursor:pointer;">Ulangi</button>`;
-        }
-        acts += `<button data-action="remove" data-id="${photo.id}" title="Hapus dari koleksi sumber" style="background:transparent;color:#94a3b8;border:none;font-size:12px;cursor:pointer;padding:2px 4px;">✕</button>`;
-        return acts;
     }
 
     function escapeHtml(str) {
@@ -671,113 +986,12 @@
     }
 
     /* ==========================================================================
-       5. JEMBATAN WEBRTC VIRTUAL CAMERA STREAM (DENGAN PROTEKSI MEMORI & AUTO ADVANCE)
+       8. INISIALISASI MESIN
        ========================================================================== */
-    function hookWebRTC() {
-        if (win._mbgGUMHooked) return;
-        if (!win.navigator || !win.navigator.mediaDevices || !win.navigator.mediaDevices.getUserMedia) return;
-
-        win._mbgGUMHooked = true;
-        const oldGUM = win.navigator.mediaDevices.getUserMedia.bind(win.navigator.mediaDevices);
-
-        win.navigator.mediaDevices.getUserMedia = async function (constraints) {
-            const activePhoto = getActivePhoto();
-
-            if (constraints && constraints.video && activePhoto && activePhoto.file) {
-                try {
-                    const canvas = document.createElement('canvas');
-                    const imgEl = new Image();
-                    imgEl.src = activePhoto.url;
-
-                    // Tunggu load dengan fallback timeout agar tidak hang
-                    await new Promise((resolve) => {
-                        if (imgEl.complete && imgEl.naturalWidth) return resolve();
-                        imgEl.onload = () => resolve();
-                        imgEl.onerror = () => resolve();
-                        setTimeout(resolve, 2000);
-                    });
-
-                    // Skala resolusi aman (max 1280px) agar memori grafis ringan di desktop dan mobile
-                    let w = imgEl.naturalWidth || 1280;
-                    let h = imgEl.naturalHeight || 720;
-                    const maxDim = 1280;
-                    if (w > maxDim || h > maxDim) {
-                        if (w > h) {
-                            h = Math.round((h * maxDim) / w);
-                            w = maxDim;
-                        } else {
-                            w = Math.round((w * maxDim) / h);
-                            h = maxDim;
-                        }
-                    }
-                    canvas.width = w;
-                    canvas.height = h;
-
-                    const ctx = canvas.getContext('2d');
-                    ctx.drawImage(imgEl, 0, 0, w, h);
-
-                    const stream = canvas.captureStream(20);
-                    const drawInterval = setInterval(() => {
-                        try {
-                            ctx.drawImage(imgEl, 0, 0, w, h);
-                        } catch (e) {
-                            clearInterval(drawInterval);
-                        }
-                    }, 50);
-
-                    const videoTrack = stream.getVideoTracks()[0];
-                    if (videoTrack) {
-                        let finalized = false;
-                        const onStreamEnded = () => {
-                            if (finalized) return;
-                            finalized = true;
-                            clearInterval(drawInterval);
-
-                            // Tandai foto berhasil dijepret untuk sekolah saat ini (tanpa menghapus foto sumber)
-                            setPhotoDeliveryStatus(activePhoto.id, 'sent');
-
-                            if (state.autoAdvance) {
-                                advanceQueue();
-                            } else {
-                                syncLegacy();
-                                renderWidget();
-                            }
-                        };
-
-                        const originalStop = videoTrack.stop.bind(videoTrack);
-                        videoTrack.stop = function () {
-                            originalStop();
-                            onStreamEnded();
-                        };
-                        videoTrack.addEventListener('ended', onStreamEnded);
-                    }
-
-                    showNotification(`Mengalirkan [${activePhoto.category}] ke kamera...`, 'info', 3000);
-                    renderWidget();
-                    return stream;
-                } catch (err) {
-                    console.error('[MBG Helper] Error mengalirkan foto virtual:', err);
-                    setPhotoDeliveryStatus(activePhoto.id, 'failed');
-                    showNotification('Gagal mengalirkan foto: ' + (err.message || 'Error'), 'error', 5000);
-                    renderWidget();
-                    throw err;
-                }
-            }
-
-            return oldGUM(constraints);
-        };
-    }
-
-    function cleanCaptureAttributes() {
-        document.querySelectorAll('input[type="file"]').forEach(input => {
-            if (input.id !== 'mbg-file-input' && input.hasAttribute('capture')) {
-                input.removeAttribute('capture');
-            }
-        });
-    }
-
     function init() {
         cleanCaptureAttributes();
+        setupCaptureObserver();
+        setupInputInterception();
         detectSchoolContext();
         hookWebRTC();
         if (!document.getElementById('mbg-quick-bypass')) {
@@ -786,7 +1000,7 @@
         restoreCollectionFromStorage();
     }
 
-    // Interval penjaga untuk SPA
+    // Interval penjaga untuk lifecycle SPA
     setInterval(init, 1500);
 
     if (document.readyState === 'loading') {

@@ -2,11 +2,44 @@ import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 
-// Helper mock browser environment untuk testing Bookmarklet Mobile (Unified v2.2.0)
+// Helper mock browser environment untuk testing Bookmarklet Mobile (Unified v2.2.1)
 function createMockMobileEnv() {
     const elementsById = new Map();
     const eventListeners = new Map();
     const dbStores = new Map();
+
+    class MockDataTransfer {
+        constructor() {
+            this.files = [];
+            this.items = {
+                add: (file) => this.files.push(file)
+            };
+        }
+    }
+
+    class MockEvent {
+        constructor(type, opts) {
+            this.type = type;
+            this.bubbles = !!(opts && opts.bubbles);
+        }
+    }
+
+    function MockHTMLInputElement() {}
+    MockHTMLInputElement.prototype = {
+        click: function () {
+            this.nativeClicked = true;
+        }
+    };
+
+    let observerCb = null;
+    class MockMutationObserver {
+        constructor(cb) {
+            this.cb = cb;
+            observerCb = cb;
+        }
+        observe() { }
+        disconnect() { }
+    }
 
     function createNode(tag, id = '') {
         const node = {
@@ -19,6 +52,7 @@ function createMockMobileEnv() {
             _rawHtml: '',
             onclick: null,
             onchange: null,
+            oninput: null,
             hasAttribute(attr) { return attr in this.attributes; },
             removeAttribute(attr) { delete this.attributes[attr]; },
             setAttribute(attr, val) { this.attributes[attr] = val; },
@@ -59,7 +93,18 @@ function createMockMobileEnv() {
                 return results;
             },
             click() {
+                if (this.tagName === 'INPUT' && mockWin && mockWin.HTMLInputElement && mockWin.HTMLInputElement.prototype && mockWin.HTMLInputElement.prototype.click) {
+                    return mockWin.HTMLInputElement.prototype.click.apply(this, arguments);
+                }
                 if (typeof this.onclick === 'function') this.onclick({ stopPropagation() { } });
+            },
+            dispatchEvent(evt) {
+                if (typeof this.onchange === 'function' && evt.type === 'change') this.onchange(evt);
+                if (typeof this.oninput === 'function' && evt.type === 'input') this.oninput(evt);
+                return true;
+            },
+            closest(sel) {
+                return null;
             }
         };
 
@@ -224,6 +269,11 @@ function createMockMobileEnv() {
             }
         },
         indexedDB: mockIndexedDB,
+        DataTransfer: MockDataTransfer,
+        Event: MockEvent,
+        HTMLInputElement: MockHTMLInputElement,
+        MutationObserver: MockMutationObserver,
+        triggerObserver() { if (observerCb) observerCb(); },
         URL: {
             createObjectURL(file) { return 'blob://mock/' + file.name; },
             revokeObjectURL(url) { }
@@ -277,7 +327,7 @@ describe('MBG Photo Helper — Debugging & Verifikasi Mobile Bookmarklet', () =>
 
         const fileInput = mockDoc.getElementById('mbg-file-input');
         assert.ok(fileInput, 'Input mbg-file-input harus ada');
-        assert.ok(fileInput.style.position === 'absolute' || fileInput.attributes.multiple !== undefined);
+        assert.ok(fileInput.style.position === 'absolute' || fileInput.style.position === 'fixed' || fileInput.attributes.multiple !== undefined);
     });
 
     test('3. Pemilihan 4 Foto di HP dan Pembaruan State Koleksi', () => {
@@ -390,5 +440,126 @@ describe('MBG Photo Helper — Debugging & Verifikasi Mobile Bookmarklet', () =>
         widget.click();
         assert.strictEqual(mockWin._mbgState.minimized, false);
         assert.ok(widget.innerHTML.includes('+ Pilih / Tambah Foto'));
+    });
+
+    test('8. Fitur Ganti Foto (Replace Single Photo) memperbarui berkas tanpa merusak kategori atau urutan slot', () => {
+        const { mockWin, mockDoc } = createMockMobileEnv();
+        runBookmarklet(mockWin, mockDoc);
+
+        const fileInput = mockDoc.getElementById('mbg-file-input');
+        fileInput.onchange({
+            target: {
+                files: [
+                    { name: 'makanan.jpg', size: 1024, type: 'image/jpeg' },
+                    { name: 'ompreng_salah.jpg', size: 1024, type: 'image/jpeg' },
+                    { name: 'cuci.jpg', size: 1024, type: 'image/jpeg' },
+                    { name: 'pendukung.jpg', size: 1024, type: 'image/jpeg' }
+                ]
+            }
+        });
+
+        const st = mockWin._mbgState;
+        assert.strictEqual(st.collection.length, 4);
+        assert.strictEqual(st.collection[1].name, 'ompreng_salah.jpg');
+
+        // Pengguna mengetuk tombol "Ganti" pada slot 2 (Ompreng)
+        st.replaceTargetId = st.collection[1].id;
+
+        // Memilih foto pengganti baru dari galeri
+        const replacementFile = { name: 'ompreng_benar_hd.jpg', size: 2048, type: 'image/jpeg' };
+        fileInput.onchange({ target: { files: [replacementFile] } });
+
+        // Verifikasi hasil penggantian
+        assert.strictEqual(st.collection.length, 4, 'Jumlah foto tetap 4 (tidak bertambah)');
+        assert.strictEqual(st.collection[1].name, 'ompreng_benar_hd.jpg', 'Nama berkas slot 2 harus terbarui');
+        assert.strictEqual(st.collection[1].category, '2. Foto Ompreng / Wadah Makanan', 'Kategori slot 2 wajib dipertahankan');
+        assert.strictEqual(st.activePhotoId, st.collection[1].id, 'Foto yang baru diganti otomatis aktif');
+        assert.strictEqual(st.collection[0].name, 'makanan.jpg', 'Slot 1 tidak boleh berubah');
+        assert.strictEqual(st.collection[2].name, 'cuci.jpg', 'Slot 3 tidak boleh berubah');
+        assert.strictEqual(st.replaceTargetId, null, 'replaceTargetId harus di-reset');
+    });
+
+    test('9. Intersepsi Input File POP SIPGN otomatis menginjeksi foto aktif & memicu event form', () => {
+        const { mockWin, mockDoc, elementsById } = createMockMobileEnv();
+        runBookmarklet(mockWin, mockDoc);
+
+        const fileInput = mockDoc.getElementById('mbg-file-input');
+        fileInput.onchange({
+            target: {
+                files: [
+                    { name: 'makanan_auto.jpg', size: 1024, type: 'image/jpeg' },
+                    { name: 'ompreng_auto.jpg', size: 1024, type: 'image/jpeg' }
+                ]
+            }
+        });
+
+        const st = mockWin._mbgState;
+        assert.strictEqual(st.activePhotoId, st.collection[0].id);
+
+        // Buat elemen input file formulir POP SIPGN di halaman
+        const popInput = mockDoc.createElement('input');
+        popInput.attributes.type = 'file';
+        popInput.id = 'pop-foto-step-1';
+        elementsById.set('pop-foto-step-1', popInput);
+
+        let changeFired = false;
+        popInput.onchange = () => { changeFired = true; };
+
+        // Simulasikan POP SIPGN memanggil .click() pada input file
+        popInput.click();
+
+        // Verifikasi berkas aktif terinjeksi ke formulir POP SIPGN tanpa buka kamera/galeri sistem
+        assert.strictEqual(popInput.files.length, 1, 'Berkas harus terinjeksi ke input POP SIPGN');
+        assert.strictEqual(popInput.files[0].name, 'makanan_auto.jpg');
+        assert.strictEqual(changeFired, true, 'Event onchange harus terpicu agar formulir mendeteksi berkas');
+        assert.strictEqual(st.schoolDeliveries[st.currentSchool.id][st.collection[0].id], 'sent');
+        assert.strictEqual(st.activePhotoId, st.collection[1].id, 'Antrean otomatis maju ke foto berikutnya');
+    });
+
+    test('10. Pembersihan atribut capture dinamis via MutationObserver mencegah pembukaan kamera langsung', () => {
+        const { mockWin, mockDoc, elementsById } = createMockMobileEnv();
+        runBookmarklet(mockWin, mockDoc);
+
+        // Tambahkan input file baru yang disisipkan dinamis oleh SPA dengan atribut capture
+        const dynamicInput = mockDoc.createElement('input');
+        dynamicInput.attributes.type = 'file';
+        dynamicInput.setAttribute('capture', 'environment');
+        elementsById.set('dyn-input-capture', dynamicInput);
+
+        // Jalankan trigger MutationObserver
+        mockWin.triggerObserver();
+
+        assert.strictEqual(dynamicInput.hasAttribute('capture'), false, 'Atribut capture harus dihapus secara reaktif');
+    });
+
+    test('11. Loader Bookmarklet: Pencegahan duplikasi eksekusi & penanganan error jaringan', () => {
+        const { mockWin, mockDoc } = createMockMobileEnv();
+        const loaderCode = fs.readFileSync('scripts/bookmarklet-loader.url.txt', 'utf8').replace('javascript:', '');
+
+        let alertMsg = '';
+        mockWin.alert = (msg) => { alertMsg = msg; };
+
+        // Eksekusi pertama (belum ada _mbgState)
+        const run1 = new Function('window', 'document', 'alert', loaderCode);
+        run1(mockWin, mockDoc, mockWin.alert);
+
+        const appendedScripts = [...mockDoc.head.children, ...mockDoc.body.children].filter(c => c.tagName === 'SCRIPT');
+        assert.strictEqual(appendedScripts.length, 1, 'Harus menambahkan 1 elemen script ke DOM');
+        const scriptEl = appendedScripts[0];
+        const srcUrl = scriptEl.src || scriptEl.attributes.src || '';
+        assert.ok(srcUrl.includes('https://cdn.jsdelivr.net/'), 'URL script harus menunjuk ke HTTPS CDN');
+        assert.ok(srcUrl.includes('?t='), 'URL harus memiliki cache buster timestamp');
+
+        // Uji penanganan error
+        scriptEl.onerror();
+        assert.ok(alertMsg.includes('Gagal memuat'), 'Harus memunculkan pesan alert gagal memuat jika script error');
+
+        // Eksekusi kedua ketika _mbgState sudah ada
+        mockWin._mbgState = { collection: [] };
+        const run2 = new Function('window', 'document', 'alert', loaderCode);
+        run2(mockWin, mockDoc, mockWin.alert);
+
+        const scriptsAfterSecondRun = [...mockDoc.head.children, ...mockDoc.body.children].filter(c => c.tagName === 'SCRIPT');
+        assert.strictEqual(scriptsAfterSecondRun.length, 1, 'Tidak boleh menambahkan script ganda jika MBG Helper sudah aktif');
     });
 });

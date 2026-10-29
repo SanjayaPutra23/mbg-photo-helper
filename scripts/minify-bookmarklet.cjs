@@ -2,6 +2,24 @@ const fs = require('fs');
 
 const src = fs.readFileSync('scripts/bookmarklet.js', 'utf8');
 
+// Sinkronisasi otomatis ke userscript agar kode inti 100% identik
+const iife = src.substring(src.indexOf('(function () {'));
+const userscriptHeader = `// ==UserScript==
+// @name         MBG - Local Photo Helper (Multi-Foto & Multi-Sekolah)
+// @namespace    https://pop-sipgn.bgn.go.id/
+// @version      2.2.1
+// @description  Bypass Kamera POP SIPGN Otomatis & Koleksi Foto Multi-Sekolah untuk Dokumentasi SPPG MBG
+// @author       Antigravity 2.0
+// @match        *://pop-sipgn.bgn.go.id/*
+// @include      *pop-sipgn.bgn.go.id*
+// @grant        unsafeWindow
+// @run-at       document-idle
+// ==/UserScript==
+
+`;
+fs.writeFileSync('scripts/mbg-photo-helper.user.js', userscriptHeader + iife, 'utf8');
+console.log('Sinkronisasi userscript: SELESAI');
+
 function minifyJs(code) {
     let result = '';
     let i = 0;

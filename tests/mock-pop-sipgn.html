@@ -205,7 +205,10 @@
                         <span style="font-size: 12px; color: #94a3b8;">Belum ada foto</span>
                     </div>
                 </div>
-                <button class="btn-camera" onclick="openCameraModal(1)">📷 Buka Kamera</button>
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                    <button class="btn-camera" onclick="openCameraModal(1)">📷 Buka Kamera (WebRTC)</button>
+                    <label class="btn-camera" style="background:#0f766e;cursor:pointer;"><input type="file" accept="image/*" capture="environment" style="display:none;" onchange="handleFileSelected(event, 1)">📱 Input Form (Mode HP)</label>
+                </div>
             </div>
 
             <!-- Slot 2: Ompreng -->
@@ -217,7 +220,10 @@
                         <span style="font-size: 12px; color: #94a3b8;">Belum ada foto</span>
                     </div>
                 </div>
-                <button class="btn-camera" onclick="openCameraModal(2)">📷 Buka Kamera</button>
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                    <button class="btn-camera" onclick="openCameraModal(2)">📷 Buka Kamera (WebRTC)</button>
+                    <label class="btn-camera" style="background:#0f766e;cursor:pointer;"><input type="file" accept="image/*" capture="environment" style="display:none;" onchange="handleFileSelected(event, 2)">📱 Input Form (Mode HP)</label>
+                </div>
             </div>
 
             <!-- Slot 3: Pencucian Ompreng -->
@@ -229,7 +235,10 @@
                         <span style="font-size: 12px; color: #94a3b8;">Belum ada foto</span>
                     </div>
                 </div>
-                <button class="btn-camera" onclick="openCameraModal(3)">📷 Buka Kamera</button>
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                    <button class="btn-camera" onclick="openCameraModal(3)">📷 Buka Kamera (WebRTC)</button>
+                    <label class="btn-camera" style="background:#0f766e;cursor:pointer;"><input type="file" accept="image/*" capture="environment" style="display:none;" onchange="handleFileSelected(event, 3)">📱 Input Form (Mode HP)</label>
+                </div>
             </div>
 
             <!-- Slot 4: Dokumentasi Pendukung -->
@@ -241,7 +250,10 @@
                         <span style="font-size: 12px; color: #94a3b8;">Belum ada foto</span>
                     </div>
                 </div>
-                <button class="btn-camera" onclick="openCameraModal(4)">📷 Buka Kamera</button>
+                <div style="display:flex;flex-direction:column;gap:6px;">
+                    <button class="btn-camera" onclick="openCameraModal(4)">📷 Buka Kamera (WebRTC)</button>
+                    <label class="btn-camera" style="background:#0f766e;cursor:pointer;"><input type="file" accept="image/*" capture="environment" style="display:none;" onchange="handleFileSelected(event, 4)">📱 Input Form (Mode HP)</label>
+                </div>
             </div>
         </div>
 
@@ -352,6 +364,15 @@
             prevBox.innerHTML = `<img src="${dataUrl}" alt="Hasil Jepretan" />`;
 
             closeCameraModal();
+        }
+
+        function handleFileSelected(event, step) {
+            const file = event.target.files && event.target.files[0];
+            if (file) {
+                const prevBox = document.getElementById('prev-' + step);
+                const url = URL.createObjectURL(file);
+                prevBox.innerHTML = `<img src="${url}" alt="File Injected" />`;
+            }
         }
 
         function resetAllPreviews() {

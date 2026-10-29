@@ -1,6 +1,6 @@
 # Panduan Pemasangan & Penggunaan (Laptop / PC) — Multi-Foto & Multi-Sekolah
 
-Panduan ini ditujukan untuk pengguna komputer/laptop berbasis Windows, macOS, atau Linux menggunakan browser Google Chrome, Brave, atau Microsoft Edge dengan **MBG Photo Helper Versi 2.2.0**.
+Panduan ini ditujukan untuk pengguna komputer/laptop berbasis Windows, macOS, atau Linux menggunakan browser Google Chrome, Brave, atau Microsoft Edge dengan **MBG Photo Helper Versi 2.2.1**.
 
 ---
 
@@ -25,7 +25,7 @@ Karena sistem keamanan browser terbaru (Manifest V3), ikuti langkah ini agar Tam
 
 ---
 
-## 3. Pemasangan / Pembaruan Script ke Versi 2.2.0
+## 3. Pemasangan / Pembaruan Script ke Versi 2.2.1
 1. Klik ikon **Tampermonkey** di bilah kanan atas browser Anda.
 2. Klik **Dashboard** lalu:
    - Jika sudah memasang versi lama: Klik nama script `MBG - Local Photo Helper`, hapus seluruh teks lama, ganti dengan kode baru.
@@ -49,15 +49,17 @@ Karena sistem keamanan browser terbaru (Manifest V3), ikuti langkah ini agar Tam
      * *3. Foto Kegiatan Pencucian Ompreng*
      * *4. Foto Dokumentasi Pendukung*
    - Tekan **Open**. Seluruh foto akan masuk ke daftar koleksi sumber yang persisten (disimpan ke IndexedDB browser).
-4. **Fleksibilitas Koleksi:**
+4. **Mengganti Foto Per Slot (Fitur "Ganti"):**
+   - Jika ada foto yang buram atau salah pilih, klik tombol **"Ganti"** pada kartu foto yang ingin diubah.
+   - Pilih berkas foto pengganti dari komputer Anda. Foto tersebut akan langsung menggantikan foto lama dengan tetap mempertahankan label kategori SOP dan urutan slot lainnya.
+5. **Fleksibilitas Koleksi:**
    - Anda dapat menambahkan foto lain kapan saja dengan mengklik lagi **"+ Pilih / Tambah Foto"** tanpa menghapus foto yang sudah ada.
-   - Untuk menghapus foto yang keliru, klik ikon tempat sampah (**🗑**) pada kartu foto tersebut.
+   - Untuk menghapus foto tertentu, klik tombol silang (**✕**) pada kartu foto tersebut.
 
 ### B. Mengisi Dokumentasi Sekolah Pertama:
 1. Klik tombol **Kamera** pada slot Foto #1 di form POP SIPGN. Foto pertama otomatis mengalir ke layar kamera virtual. Klik jepret/simpan di POP SIPGN.
-2. Saat penangkapan foto selesai, antrean virtual otomatis memajukan kamera ke Foto #2.
-3. Lanjutkan klik tombol **Kamera** pada slot Foto #2, #3, dan #4.
-4. Status pengiriman setiap foto untuk sekolah tersebut akan ditandai dengan badge hijau (**✓ Terkirim**).
+2. Saat penangkapan foto selesai, antrean virtual otomatis memajukan kamera ke Foto #2 (Ompreng), lalu Foto #3 (Cuci Ompreng), dan Foto #4 (Pendukung).
+3. Status pengiriman setiap foto untuk sekolah tersebut akan ditandai dengan badge hijau (**✓ Terkirim**).
 
 ### C. Menggunakan Foto yang Sama untuk Sekolah Berikutnya (Tanpa Pilih Ulang):
 1. Beralih ke formulir sekolah kedua di POP SIPGN.
@@ -70,8 +72,8 @@ Karena sistem keamanan browser terbaru (Manifest V3), ikuti langkah ini agar Tam
 ## 5. Menangani Kendala (Troubleshooting)
 
 - **Ingin Memilih Foto Tertentu ke Kamera Secara Manual:**
-  - Klik tombol **"📷 Pilih ke Kamera"** pada kartu foto mana saja untuk langsung mengarahkannya ke kamera tanpa terikat urutan otomatis.
+  - Klik tombol **"Pilih ke Kamera"** pada kartu foto mana saja untuk langsung mengarahkannya ke kamera tanpa terikat urutan otomatis.
 - **Mengosongkan Seluruh Koleksi Sumber:**
-  - Klik tombol abu-abu **"Reset Koleksi"** di samping tombol tambah foto. Browser akan meminta konfirmasi sebelum membersihkan IndexedDB.
+  - Klik tombol **"✕ Reset"** di samping tombol tambah foto. Browser akan meminta konfirmasi sebelum membersihkan IndexedDB.
 - **Mengecilkan Tampilan Widget:**
   - Klik tombol minus (**−**) pada bilah judul widget untuk mengecilkannya menjadi pil minimalis. Klik tombol **Buka** kapan saja untuk memperbesarnya kembali.
